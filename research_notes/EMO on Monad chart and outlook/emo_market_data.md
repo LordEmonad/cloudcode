@@ -241,5 +241,5 @@ EMO has broad **data-aggregator coverage** and one claimed small-CEX listing, WE
 - Coverage is typical of a sub-$2M Monad meme. Aggregator presence helps discovery, but trading still runs through thin on-chain pools. The WEEX pair's current status and volume are unknown and probably small.
 
 ### Gaps
-- No CoinMarketCap page was found. The WEEX listing is still active? Unconfirmed. No evidence of Binance, Bybit, OKX, Coinbase or Upbit trading support for EMO.
+- No CoinMarketCap page was found. Whether the WEEX listing is still active is unconfirmed. No evidence of Binance, Bybit, OKX, Coinbase or Upbit trading support for EMO.
 - The creator's X post making the "higher highs and higher lows for ~10 months" claim was not surfaced by search, so its exact wording and date are unverified.
