@@ -153,6 +153,23 @@ export class Hud {
     this.flashEl.animate([{ opacity: amount }, { opacity: 0 }], { duration: 260, easing: 'ease-out' });
   }
 
+  /** Big title card for entering a circle of hell. */
+  banner(sub: string, title: string): void {
+    const el = document.createElement('div');
+    el.className = 'banner';
+    el.innerHTML = `<small>${sub}</small><span>${title}</span>`;
+    this.root.appendChild(el);
+    el.animate(
+      [
+        { transform: 'translate(-50%, -50%) scale(1.6) rotate(-4deg)', opacity: 0, filter: 'blur(6px)' },
+        { transform: 'translate(-50%, -50%) scale(1) rotate(-2deg)', opacity: 1, filter: 'blur(0)', offset: 0.12 },
+        { transform: 'translate(-50%, -50%) scale(0.98) rotate(-2deg)', opacity: 1, offset: 0.8 },
+        { transform: 'translate(-50%, -60%) scale(0.9) rotate(-2deg)', opacity: 0 },
+      ],
+      { duration: 1900, easing: 'cubic-bezier(.2,.8,.2,1)' },
+    ).onfinish = () => el.remove();
+  }
+
   /** A comic callout at a screen position. */
   callout(text: string, x: number, y: number, style: 'bonk' | 'crack' | 'points' | 'big' | 'gate' | 'whale', sub?: string): void {
     const el = document.createElement('div');

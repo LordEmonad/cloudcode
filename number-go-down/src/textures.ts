@@ -230,3 +230,47 @@ export function starTexture(): THREE.CanvasTexture {
   g.fill();
   return finish(c, false, false);
 }
+
+/** Hell rock: blotchy stone with dark cracks and a few glowing veins. */
+export function rockTexture(): THREE.CanvasTexture {
+  const [c, g] = canvas(256, 256);
+  g.fillStyle = '#9a8a90';
+  g.fillRect(0, 0, 256, 256);
+  let seed = 3;
+  const rand = () => { seed = (seed * 16807) % 2147483647; return seed / 2147483647; };
+  for (let i = 0; i < 260; i++) {
+    const x = rand() * 256, y = rand() * 256, r = 6 + rand() * 26;
+    const shade = Math.floor(110 + rand() * 90);
+    g.fillStyle = `rgba(${shade},${shade - 12},${shade - 6},0.35)`;
+    g.beginPath(); g.arc(x, y, r, 0, Math.PI * 2); g.fill();
+  }
+  // Cracks: wandering dark lines that wrap at the edges.
+  g.lineCap = 'round';
+  for (let i = 0; i < 14; i++) {
+    let x = rand() * 256, y = rand() * 256;
+    const hot = i < 4;
+    g.strokeStyle = hot ? 'rgba(255,140,60,0.95)' : 'rgba(30,10,20,0.75)';
+    g.lineWidth = hot ? 2.5 : 1.5 + rand() * 2;
+    g.beginPath(); g.moveTo(x, y);
+    for (let k = 0; k < 7; k++) {
+      x += (rand() - 0.5) * 50; y += rand() * 36;
+      g.lineTo(x, y);
+    }
+    g.stroke();
+  }
+  return finish(c, true);
+}
+
+/** Black-and-white checkerboard (the emo Vans pattern). */
+export function checkerTexture(repeatX = 1, repeatY = 1): THREE.CanvasTexture {
+  const [c, g] = canvas(128, 128);
+  g.fillStyle = '#f4eef2';
+  g.fillRect(0, 0, 128, 128);
+  g.fillStyle = '#120a14';
+  g.fillRect(0, 0, 64, 64);
+  g.fillRect(64, 64, 64, 64);
+  const t = finish(c, true);
+  t.magFilter = THREE.NearestFilter;
+  t.repeat.set(repeatX, repeatY);
+  return t;
+}

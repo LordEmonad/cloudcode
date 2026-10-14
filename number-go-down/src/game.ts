@@ -3,7 +3,7 @@ import { initPhysics, RAPIER, GROUP, groups, type World } from './physics';
 import { PHYSICS, RAGDOLL, STEER, DAMAGE } from './config';
 import { Ragdoll, type PartId } from './ragdoll';
 import { loadEmonad } from './assets';
-import { Course, SHAFT, zoneColor, type Obstacle, type Sensor } from './course';
+import { Course, ZONES, type Obstacle, type Sensor, type Frame, type Zone } from './course';
 import { Slingshot } from './slingshot';
 import { CameraRig } from './camera';
 import { DamageModel, BONE_NAMES, type ImpactEvent } from './damage';
@@ -14,6 +14,7 @@ import { Particles, Post } from './fx';
 import { Hud, fmt } from './hud';
 import { GameAudio } from './audio';
 import { toon, outlineMaterial } from './materials';
+import { createSky } from './hell';
 
 type State = 'aim' | 'flight' | 'landed' | 'results';
 
@@ -49,6 +50,12 @@ export class Game {
   private keyLight!: THREE.DirectionalLight;
   private fillLight!: THREE.DirectionalLight;
   private hemi!: THREE.HemisphereLight;
+  private glowLight!: THREE.DirectionalLight;
+  private sky!: THREE.Mesh<THREE.SphereGeometry, THREE.ShaderMaterial>;
+  private frameNow: Frame | null = null;
+  private bannerZone: Zone | null = null;
+  private farthest = 0;
+  private farthestAt = 0;
   private outlines: THREE.Mesh[] = [];
   private outlineMat = outlineMaterial(0x0b0410, 2.4);
 
@@ -71,8 +78,6 @@ export class Game {
 
   // Run state.
   private stillTime = 0;
-  private lowest = Infinity;
-  private lowestAt = 0;
   private whaleContact = 0;
   private pendingCallouts: { text: string; at: THREE.Vector3; style: 'gate' | 'whale' | 'big'; sub?: string }[] = [];
   private landedAt = 0;
@@ -99,6 +104,8 @@ export class Game {
     this.renderer.setPixelRatio(this.pixelRatio);
     this.renderer.setSize(window.innerWidth, window.innerHeight);
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
+    this.renderer.shadowMap.enabled = true;
+    this.renderer.shadowMap.type = THREE.PCFShadowMap;
 
     const [model, world] = await Promise.all([
       loadEmonad((f) => progress(0.1 + f * 0.6)),
@@ -112,7 +119,7 @@ export class Game {
     this.rig = new CameraRig(window.innerWidth / window.innerHeight);
     this.setupLights();
     this.course = new Course(world, this.scene);
-    this.sling = new Slingshot(this.scene, this.course.buildPosts());
+    this.sling = new Slingshot(this.scene, new THREE.Vector3(0, 0, 0.5), (pos, q) => this.course.addPost(pos, q));
     this.ragdoll = new Ragdoll(world, model);
     this.scene.add(model);
     this.dressEmonad();
@@ -150,8 +157,19 @@ export class Game {
     this.scene.add(this.keyLight, this.keyLight.target);
     this.fillLight = new THREE.DirectionalLight(0xa259ff, 1.1);
     this.scene.add(this.fillLight, this.fillLight.target);
-    this.scene.fog = new THREE.Fog(0x2e0612, 26, 95);
-    this.scene.background = new THREE.Color(0x2e0612);
+    // Hell glows from below: lava light up into faces and undersides.
+    this.glowLight = new THREE.DirectionalLight(0xff5a20, 1.2);
+    this.scene.add(this.glowLight, this.glowLight.target);
+    this.scene.fog = new THREE.FogExp2(0x5a0a1c, 0.011);
+    this.sky = createSky();
+    this.scene.add(this.sky);
+    // Real-time shadow from the key light, only around Emonad (cheap and grounding).
+    this.keyLight.castShadow = true;
+    this.keyLight.shadow.mapSize.set(1024, 1024);
+    const sc = this.keyLight.shadow.camera;
+    sc.left = -7; sc.right = 7; sc.top = 7; sc.bottom = -7; sc.near = 1; sc.far = 40;
+    this.keyLight.shadow.bias = -0.0015;
+    this.keyLight.shadow.normalBias = 0.04;
   }
 
   /** Comic toon materials, a hot-pink rim and an inverted-hull outline (report). */
@@ -159,7 +177,9 @@ export class Game {
     const body = this.ragdoll.body;
     const oldBody = body.material as THREE.MeshStandardMaterial;
     body.material = toon(0xffffff, { map: oldBody.map, rim: 0xff4fd8, rimPower: 2.2, rimStrength: 0.75 });
+    body.castShadow = true;
     const hair = this.ragdoll.hair;
+    if (hair) hair.castShadow = true;
     if (hair) {
       const oldHair = hair.material as THREE.MeshStandardMaterial;
       hair.material = toon(0xffffff, { map: oldHair.map, rim: 0xc49bff, rimPower: 2.0, rimStrength: 0.9, emissive: 0x160626 });
@@ -275,8 +295,6 @@ export class Game {
     this.simT = 0;
     this.acc = 0;
     this.stillTime = 0;
-    this.lowest = Infinity;
-    this.lowestAt = 0;
     this.whaleContact = 0;
     this.finaleDone = false;
     this.course.reset();
@@ -293,13 +311,16 @@ export class Game {
     this.ragdoll.resetPose(this.seatPosition(), new THREE.Quaternion());
     this.ragdoll.setHeld(true);
     this.setSeatedPose();
-    this.rig.snapTo(new THREE.Vector3(0, this.sling.rest.y - 1.6, 0), 8.6);
+    this.rig.snapAim(this.sling.pouch);
+    this.farthest = 0;
+    this.farthestAt = 0;
+    this.bannerZone = null;
     this.hintTimer = 0;
     this.stats.runs++;
   }
 
   private seatPosition(): THREE.Vector3 {
-    return this.sling.pouch.clone().add(new THREE.Vector3(0, 0.2, 0.02));
+    return this.sling.pouch.clone().add(new THREE.Vector3(0, 0.22, 0.05));
   }
 
   private setSeatedPose(): void {
@@ -313,8 +334,10 @@ export class Game {
     r.setPose('upperArmR', [0, 0, 25]);
     r.setPose('foreArmL', [0, 0, 35]);
     r.setPose('foreArmR', [0, 0, 35]);
-    r.setPose('spine', [0, 0, 8]);
-    r.setPose('head', [0, 0, -6]);
+    // Sitting up and looking back at you, scared.
+    r.setPose('spine', [0, 0, -6]);
+    r.setPose('chest', [0, 0, -6]);
+    r.setPose('head', [0, 0, -28]);
   }
 
   private launch(velocity: THREE.Vector3, power: number): void {
@@ -323,7 +346,8 @@ export class Game {
     this.ragdoll.setHeld(false);
     this.ragdoll.clearPose();
     // Report: every body gets the same launch velocity, so limbs do not stretch.
-    const spin = new THREE.Vector3((Math.random() - 0.5) * 3, (Math.random() - 0.5) * 2, -velocity.x * 0.35 + (Math.random() - 0.5) * 2);
+    // He leaves facing the camera, so he tumbles backward head over heels.
+    const spin = new THREE.Vector3(-2 - Math.random() * 2.5, (Math.random() - 0.5) * 1.5, (Math.random() - 0.5) * 2);
     this.ragdoll.setVelocity(velocity, spin);
     this.sling.release();
     this.director.liftOff();
@@ -355,14 +379,19 @@ export class Game {
       const input = keySteer !== 0 ? keySteer : this.steerInput;
       this.steerSmoothed += (input - this.steerSmoothed) * (1 - Math.exp(-dt / 0.1));
       if (this.state === 'flight') {
+        // Steering is sideways across the track, wherever the track points.
+        const right = this.course.frameAt(com).right;
         const target = this.steerSmoothed * STEER.targetSpeed;
         let scale = this.simT < this.steerDampUntil ? STEER.afterImpactScale : 1;
         scale *= this.director.steeringBoost;
         const maxA = STEER.maxAccelG * 9.81 * scale;
-        steer.x = THREE.MathUtils.clamp((target - vel.x) / STEER.response, -maxA, maxA);
+        const a = THREE.MathUtils.clamp((target - vel.dot(right)) / STEER.response, -maxA, maxA);
+        steer.copy(right).multiplyScalar(a);
+        // Downhill assist: an arcade push along the track when he bogs down, so runs flow.
+        const frame = this.course.frameAt(com);
+        const along = vel.dot(frame.tangent);
+        if (along < 10 && frame.segment > 1 && frame.segment < 11) steer.addScaledVector(frame.tangent, Math.min(9, (10 - along) * 1.4));
       }
-      // Keep him in the play slab (soft spring toward z = 0).
-      steer.z = -com.z * PHYSICS.slabSpring - vel.z * 2;
     }
 
     // Steering costs speed (FlatOut rule): up to 15% extra air drag at full sway.
@@ -511,18 +540,19 @@ export class Game {
   private checkStuck(dt: number, com: THREE.Vector3, vel: THREE.Vector3): void {
     if (this.state !== 'flight') return;
     void dt;
-    if (com.y < this.lowest - 1 || this.simT < 0.5) {
-      this.lowest = Math.min(this.lowest, com.y);
-      this.lowestAt = this.simT;
+    const frame = this.course.frameAt(com);
+    if (frame.s > this.farthest + 1 || this.simT < 0.5) {
+      this.farthest = Math.max(this.farthest, frame.s);
+      this.farthestAt = this.simT;
       return;
     }
-    if (this.simT - this.lowestAt < 1.0 || com.y < SHAFT.floorY + 3) return;
-    this.lowestAt = this.simT;
-    this.lowest = com.y;
-    // The HODL hand shakes him loose (report: rescue a stuck run).
-    const side = com.x > 0 ? -1 : 1;
-    const kick = new THREE.Vector3(side * (3 + Math.random() * 2) - vel.x, 5 - vel.y, 0);
-    for (const p of this.ragdoll.parts) p.body.applyImpulse({ x: kick.x * p.mass, y: kick.y * p.mass, z: 0 }, true);
+    if (this.simT - this.farthestAt < 1.1 || frame.segment >= 11) return;
+    this.farthestAt = this.simT;
+    // The HODL hand shakes him loose (report: rescue a stuck run): onward and back to the middle.
+    const toCenter = frame.point.clone().sub(com).dot(frame.right);
+    const want = frame.tangent.clone().multiplyScalar(7).add(new THREE.Vector3(0, 4, 0)).addScaledVector(frame.right, THREE.MathUtils.clamp(toCenter, -3, 3));
+    const kick = want.sub(vel.clone().multiplyScalar(0.5));
+    for (const p of this.ragdoll.parts) p.body.applyImpulse({ x: kick.x * p.mass, y: kick.y * p.mass, z: kick.z * p.mass }, true);
     this.pendingCallouts.push({ text: 'SHAKEN OUT', at: com.clone(), style: 'gate' });
   }
 
@@ -531,9 +561,10 @@ export class Game {
     if (s.kind === 'leverage') {
       this.damage.setLeverage(s.value, this.simT, 4);
     } else {
+      // DUMP IT: a shove down the track.
       for (const p of this.ragdoll.parts) {
         const v = p.body.linvel();
-        p.body.setLinvel({ x: v.x * 0.6, y: Math.min(v.y, 0) - s.value, z: v.z }, true);
+        p.body.setLinvel({ x: v.x * 0.5 + s.dir.x * s.value, y: Math.min(v.y, 0) * 0.5 + s.dir.y * s.value - 2, z: v.z * 0.5 + s.dir.z * s.value }, true);
       }
     }
   }
@@ -626,7 +657,7 @@ export class Game {
   private presentGlass(o: Obstacle): void {
     const t = o.body.translation();
     const center = new THREE.Vector3(t.x, t.y, t.z);
-    this.particles.shatter(center, SHAFT.halfWidth * 2);
+    this.particles.shatter(center, 12);
     this.audio.shatter();
     this.rig.addTrauma(0.45);
     const p = this.hud.project(this.ragdoll.centerOfMass(), this.rig.camera);
@@ -662,7 +693,7 @@ export class Game {
     this.face.update(realDt * Math.max(0.3, timeScale), alpha);
     this.xray.update(alpha, this.director.xray, realDt);
     for (const o of this.outlines) o.visible = this.director.xray < 0.5;
-    this.course.syncMeshes();
+    this.course.syncMeshes(this.realT, realDt, this.scene.fog as THREE.FogExp2);
     this.sling.update(realDt);
     for (const s of this.course.sensors) {
       const ring = s.mesh.userData.spin as THREE.Object3D | undefined;
@@ -672,14 +703,18 @@ export class Game {
     const pelvis = this.ragdoll.get('pelvis');
     const target = this.ragdoll.renderPos(pelvis, alpha, new THREE.Vector3());
     const vel = this.ragdoll.velocity(new THREE.Vector3());
-    const mode = this.state === 'aim' ? 'aim' : this.state === 'flight' ? 'fall' : 'rest';
+    this.frameNow = this.course.frameAt(target);
+    const mode = this.state === 'aim' ? 'aim' : this.state === 'flight' ? 'chase' : 'rest';
     this.rig.cinematic = this.director.cinematic;
-    this.rig.orbit = 0.32 * this.director.orbitSign;
+    this.rig.orbit = 0.55 * this.director.orbitSign;
     // Slow-mo frames Emonad first, nudged toward the contact point.
     const closeUp = target.clone().lerp(this.director.closeUp, 0.3);
-    this.rig.update(realDt, this.state === 'aim' ? this.sling.pouch : target, vel, mode, closeUp);
+    this.rig.update(realDt, this.state === 'aim' ? this.sling.pouch : target, vel, mode, this.frameNow, closeUp,
+      this.aim && !this.aim.cancelled ? this.aim.power : 0, this.course.craterCenter);
+    this.keepCameraClear(this.state === 'aim' ? this.sling.pouch : target);
+    if (this.state === 'flight') this.announceZone(this.frameNow.zone);
 
-    this.updateAtmosphere();
+    this.updateAtmosphere(realDt);
     this.particles.update(realDt * Math.max(timeScale, 0.12), this.rig.camera.position);
     this.post.update(this.director.grade, Math.max(0, -vel.y), this.realT);
     this.post.render(realDt);
@@ -691,7 +726,7 @@ export class Game {
       this.simT < this.damage.leverageUntil ? this.damage.leverage : 1,
       this.damage.whales,
     );
-    this.hud.setDepth((SHAFT.summitY - target.y) / (SHAFT.summitY - SHAFT.floorY));
+    this.hud.setDepth(this.frameNow.progress);
     const slowmo = THREE.MathUtils.clamp((1 - timeScale) / 0.75, 0, 1) * (this.director.inCinematic ? 1 : 0);
     this.audio.update(vel.length(), slowmo, this.state === 'flight');
     if (this.director.inCinematic && this.realT - this.lastHeartbeat > 0.85) {
@@ -708,21 +743,54 @@ export class Game {
     this.publishTestState();
   }
 
-  private updateAtmosphere(): void {
-    const camY = this.rig.camera.position.y;
-    const sky = zoneColor(camY - 4, new THREE.Color(), 'sky');
-    (this.scene.background as THREE.Color).copy(sky);
-    const fog = this.scene.fog as THREE.Fog;
-    fog.color.copy(sky);
-    // Light follows the camera so every depth is lit the same way.
+  /** Blend sky, fog and lights toward the current circle of hell. */
+  private updateAtmosphere(dt = 1 / 60): void {
+    const z = this.frameNow?.zone ?? ZONES.top;
+    const k = 1 - Math.exp(-dt * 1.8);
+    const u = this.sky.material.uniforms;
+    (u.top.value as THREE.Color).lerp(new THREE.Color(z.skyTop), k);
+    (u.horizon.value as THREE.Color).lerp(new THREE.Color(z.skyHorizon), k);
+    const fog = this.scene.fog as THREE.FogExp2;
+    fog.color.lerp(new THREE.Color(z.fog), k);
+    fog.density += (z.fogDensity - fog.density) * k;
+    this.hemi.color.lerp(new THREE.Color(z.hemiSky), k);
+    this.hemi.groundColor.lerp(new THREE.Color(z.hemiGround), k);
+    this.glowLight.color.lerp(new THREE.Color(z.glow), k);
+    const hell = z.id === 'top' ? 0 : 1;
+    u.hell.value += (hell - (u.hell.value as number)) * k;
+    u.time.value = this.realT;
+    // Lights follow Emonad so every depth is lit the same way and his shadow stays crisp.
     const cp = this.rig.camera.position;
-    this.keyLight.position.set(cp.x + 5, cp.y + 8, 10);
-    this.keyLight.target.position.set(cp.x, cp.y - 4, 0);
-    this.fillLight.position.set(cp.x - 7, cp.y - 6, 4);
-    this.fillLight.target.position.set(cp.x, cp.y, 0);
-    const depth = THREE.MathUtils.clamp(-camY / 160, 0, 1);
-    this.hemi.color.setHSL(0.95, 0.3, 0.92 - depth * 0.15);
-    this.hemi.groundColor.setHSL(0.92, 0.6, 0.12 + depth * 0.04);
+    this.sky.position.copy(cp);
+    const em = this.ragdoll.get('pelvis').currPos;
+    this.keyLight.position.set(em.x + 6, em.y + 14, em.z + 8);
+    this.keyLight.target.position.copy(em);
+    this.fillLight.position.set(cp.x - 8, cp.y + 2, cp.z - 4);
+    this.fillLight.target.position.set(cp.x, cp.y - 3, cp.z - 8);
+    this.glowLight.position.set(cp.x, cp.y - 20, cp.z - 6);
+    this.glowLight.target.position.set(cp.x, cp.y, cp.z - 8);
+  }
+
+  /** Pull the camera in front of anything solid between it and Emonad. */
+  private keepCameraClear(target: THREE.Vector3): void {
+    const cam = this.rig.camera.position;
+    const dir = cam.clone().sub(target);
+    const dist = dir.length();
+    if (dist < 0.5) return;
+    dir.divideScalar(dist);
+    const ray = new RAPIER.Ray({ x: target.x, y: target.y + 0.3, z: target.z }, { x: dir.x, y: dir.y, z: dir.z });
+    const hit = this.world.castRay(ray, dist, true, RAPIER.QueryFilterFlags.EXCLUDE_SENSORS | RAPIER.QueryFilterFlags.EXCLUDE_KINEMATIC, groups(0xffff, GROUP.ENV));
+    if (hit && hit.timeOfImpact < dist) {
+      const safe = Math.max(0.8, hit.timeOfImpact - 0.45);
+      cam.set(target.x, target.y + 0.3, target.z).addScaledVector(dir, safe);
+    }
+  }
+
+  /** Title card when Emonad enters a new circle of hell. */
+  private announceZone(z: Zone): void {
+    if (z === this.bannerZone || z.id === 'top') return;
+    this.bannerZone = z;
+    this.hud.banner(z.sub, z.banner);
   }
 
   private checkLanded(dt: number, vel: THREE.Vector3): void {
@@ -737,7 +805,7 @@ export class Game {
     this.face.mood = 'dazed';
     this.hud.setFlying(false);
     const com = this.ragdoll.centerOfMass();
-    const well = this.course.wellAt(com.x);
+    const well = this.course.wellAt(com);
     const final = Math.round((this.damage.total * well.mult) / 10) * 10;
     const newBest = final > this.saved.best;
     if (newBest) {

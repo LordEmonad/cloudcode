@@ -13,8 +13,6 @@ export const PHYSICS = {
   dragPerSpeed: 0.022, // terminal speed sqrt(g / drag) ~ 25 m/s
   limbDragBoost: 1.35, // limbs trail behind the torso, the classic falling pose
   maxAngularSpeed: 34, // report: cap angular speed at 20-40 rad/s
-  slabDepth: 1.5, // half-depth of the play slab along Z
-  slabSpring: 9,
 };
 
 export const RAGDOLL = {
@@ -52,10 +50,11 @@ export const STEER = {
 export const LAUNCH = {
   cancelRadiusPx: 40, // report
   fullPowerScreenFraction: 0.36, // report: full power at 35-40% of screen height
-  minSpeed: 8,
-  maxSpeed: 24,
-  maxAngleFromDown: 62 * (Math.PI / 180),
-  previewSeconds: 0.55, // report: 0.4-0.6 s preview arc
+  minSpeed: 12,
+  maxSpeed: 27,
+  maxYaw: 24 * (Math.PI / 180), // aim left/right
+  elevation: 16 * (Math.PI / 180), // launch angle above horizontal
+  previewSeconds: 0.9,
 };
 
 export const DAMAGE = {
