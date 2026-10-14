@@ -117,6 +117,8 @@ export interface Part {
   parentChainQuat: THREE.Quaternion; // rest rotation from the driven ancestor to this bone's parent
   drivenAncestor: Part | null;
   segment: { a: THREE.Vector3; b: THREE.Vector3; radius: number }; // bind-pose bone segment (body local)
+  muscleK: number; // full-strength motor stiffness (N*m/rad), sized to the load this joint carries
+  muscleD: number;
 }
 
 interface RawJoints {
@@ -342,6 +344,8 @@ export class Ragdoll {
         parentChainQuat: new THREE.Quaternion(),
         drivenAncestor: null,
         segment: this.segmentFor(spec, origin, owned),
+        muscleK: 0,
+        muscleD: 0,
       };
       this.totalMass += mass;
       this.parts.push(part);
@@ -351,6 +355,7 @@ export class Ragdoll {
 
     this.linkDrivenAncestors();
     this.createJoints();
+    this.sizeMuscles();
     this.filterSelfCollisions();
     this.parts.forEach((p) => this.snapshot(p, true));
   }
@@ -518,8 +523,10 @@ export class Ragdoll {
       joint.setContactsEnabled(false);
       part.joint = joint;
       this.applyLimits(part);
+      // Force-based motors: acceleration-based ones barely hold a long chain
+      // hanging from a pinned pelvis (scripts/joint-motor-test.mjs).
       for (const axis of [AX.twist, AX.swing, AX.flex]) {
-        this.rawJoints().jointConfigureMotorModel(joint.handle, axis, RAPIER.MotorModel.AccelerationBased);
+        this.rawJoints().jointConfigureMotorModel(joint.handle, axis, RAPIER.MotorModel.ForceBased);
       }
     }
   }
@@ -530,6 +537,42 @@ export class Ragdoll {
    */
   private rawJoints(): RawJoints {
     return this.world.impulseJoints.raw as unknown as RawJoints;
+  }
+
+  /**
+   * Size each joint's muscle to the weight it carries: at full strength it
+   * holds its whole subtree against gravity within ~7 degrees, critically damped.
+   */
+  private sizeMuscles(): void {
+    const children = new Map<PartId, Part[]>();
+    for (const p of this.parts) {
+      if (!p.spec.parent) continue;
+      if (!children.has(p.spec.parent)) children.set(p.spec.parent, []);
+      children.get(p.spec.parent)!.push(p);
+    }
+    const subtree = (p: Part): Part[] => [p, ...(children.get(p.spec.id) ?? []).flatMap(subtree)];
+    const g = Math.abs(PHYSICS.gravity);
+    for (const part of this.parts) {
+      if (!part.joint) continue;
+      const anchor = part.currPos;
+      const parts = subtree(part);
+      let m = 0;
+      const com = new THREE.Vector3();
+      let inertia = 0;
+      for (const p of parts) {
+        const c = p.body.worldCom();
+        com.add(new THREE.Vector3(c.x, c.y, c.z).multiplyScalar(p.mass));
+        m += p.mass;
+      }
+      com.multiplyScalar(1 / m);
+      for (const p of parts) {
+        const c = p.body.worldCom();
+        inertia += p.mass * new THREE.Vector3(c.x, c.y, c.z).distanceToSquared(anchor) + p.mass * 0.004;
+      }
+      const lever = Math.max(0.05, com.distanceTo(anchor));
+      part.muscleK = (m * g * lever) / 0.12;
+      part.muscleD = 2 * 0.8 * Math.sqrt(part.muscleK * inertia);
+    }
   }
 
   private applyLimits(part: Part): void {
@@ -672,8 +715,9 @@ export class Ragdoll {
       else part.strength += Math.sign(target - part.strength) * Math.min(Math.abs(target - part.strength), RAGDOLL.muscleRegainPerSecond * dt);
       const s = part.broken ? 0 : part.strength;
       const pose = this.poseTargets.get(part.spec.id) ?? [0, 0, 0];
-      const k = RAGDOLL.motorStiffness * s;
-      const d = RAGDOLL.motorDamping * Math.sqrt(Math.max(s, 0.0001));
+      // Never send zero stiffness AND zero damping: Rapier then locks the axis rigid.
+      const k = part.muscleK * s;
+      const d = part.muscleD * Math.sqrt(s) + 0.4;
       const raw = this.rawJoints();
       const h = part.joint.handle;
       raw.jointConfigureMotorPosition(h, AX.twist, pose[0] * DEG, k, d);

@@ -10,7 +10,7 @@ export const PHYSICS = {
   pgsIterations: 4,
   gravity: -13.5, // a little heavier than Earth so falls read as snappy
   // Quadratic air drag tuned for a terminal speed of roughly 30 m/s.
-  dragPerSpeed: 0.0145,
+  dragPerSpeed: 0.022, // terminal speed sqrt(g / drag) ~ 25 m/s
   limbDragBoost: 1.35, // limbs trail behind the torso, the classic falling pose
   maxAngularSpeed: 34, // report: cap angular speed at 20-40 rad/s
   slabDepth: 1.5, // half-depth of the play slab along Z
@@ -37,9 +37,6 @@ export const RAGDOLL = {
   muscleHeld: 0.55,
   muscleRegainPerSecond: 3.2,
   muscleFloorInContact: 0.06,
-  // Motor spring at strength 1 (acceleration based).
-  motorStiffness: 900,
-  motorDamping: 45,
 };
 
 export const STEER = {
@@ -55,8 +52,8 @@ export const STEER = {
 export const LAUNCH = {
   cancelRadiusPx: 40, // report
   fullPowerScreenFraction: 0.36, // report: full power at 35-40% of screen height
-  minSpeed: 9,
-  maxSpeed: 31,
+  minSpeed: 8,
+  maxSpeed: 24,
   maxAngleFromDown: 62 * (Math.PI / 180),
   previewSeconds: 0.55, // report: 0.4-0.6 s preview arc
 };
@@ -64,7 +61,7 @@ export const LAUNCH = {
 export const DAMAGE = {
   ignoreBelow: 2.2, // m/s normal speed change: micro contacts
   bruiseAt: 7, // report: ReSkate bruise at 7 m/s
-  breakAt: 12, // report: break at 12 m/s, scaled per bone
+  breakAt: 15, // report says 12 m/s; our falls are faster, so bones hold a little longer
   hitCooldown: 0.12,
   breakCooldown: 0.5, // report: 0.5 s per bone
   refImpact: 16, // m/s that counts as impact strength 1.0
