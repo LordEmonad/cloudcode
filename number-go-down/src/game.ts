@@ -10,7 +10,7 @@ import { DamageModel, BONE_NAMES, type ImpactEvent } from './damage';
 import { Director, type Settings, type Tier } from './director';
 import { XRay } from './xray';
 import { Face } from './face';
-import { Particles, Post } from './fx';
+import { Particles, Post, EmberField } from './fx';
 import { Hud, fmt } from './hud';
 import { GameAudio } from './audio';
 import { toon, outlineMaterial } from './materials';
@@ -21,6 +21,15 @@ type State = 'aim' | 'flight' | 'landed' | 'results';
 const BONK_WORDS = ['BONK!', 'WHAM!', 'OOF!', 'THWACK!', 'CLONK!', 'SPLAT!', 'BOINK!'];
 const CRACK_WORDS = ['CRACK!', 'SNAP!', 'KRAK!', 'CRUNCH!'];
 const STORAGE = 'ngd.v1';
+
+/** Ember colours and density per circle of hell. */
+const EMBERS: Record<string, [number, number, number]> = {
+  top: [0xffcf3a, 0xfff2c0, 0.2],
+  dip: [0xff3a2a, 0xff9a3a, 0.7],
+  whale: [0x3ad8ff, 0xa259ff, 0.55],
+  inferno: [0xff6a10, 0xffd23a, 1],
+  abyss: [0xff2a4d, 0xa259ff, 0.6],
+};
 
 interface Saved {
   best: number;
@@ -43,6 +52,7 @@ export class Game {
   private xray!: XRay;
   private face!: Face;
   private particles!: Particles;
+  private embers!: EmberField;
   private post!: Post;
   private hud!: Hud;
   private audio = new GameAudio();
@@ -56,6 +66,7 @@ export class Game {
   private bannerZone: Zone | null = null;
   private farthest = 0;
   private farthestAt = 0;
+  private rescues = 0;
   private outlines: THREE.Mesh[] = [];
   private outlineMat = outlineMaterial(0x0b0410, 2.4);
 
@@ -73,6 +84,8 @@ export class Game {
   private aim: ReturnType<Slingshot['aimFromDrag']> | null = null;
   private steerInput = 0;
   private steerSmoothed = 0;
+  private steerInputY = 0;
+  private steerSmoothedY = 0;
   private keys = new Set<string>();
   private steerDampUntil = 0;
 
@@ -119,6 +132,7 @@ export class Game {
     this.rig = new CameraRig(window.innerWidth / window.innerHeight);
     this.setupLights();
     this.course = new Course(world, this.scene);
+    this.rig.restForward.copy(this.course.craterForward);
     this.sling = new Slingshot(this.scene, new THREE.Vector3(0, 0, 0.5), (pos, q) => this.course.addPost(pos, q));
     this.ragdoll = new Ragdoll(world, model);
     this.scene.add(model);
@@ -126,6 +140,7 @@ export class Game {
     this.xray = new XRay(this.scene, this.ragdoll);
     this.face = new Face(this.ragdoll);
     this.particles = new Particles(this.scene);
+    this.embers = new EmberField(this.scene);
     const lowEnd = (navigator.hardwareConcurrency ?? 8) <= 4;
     this.post = new Post(this.renderer, this.scene, this.rig.camera, lowEnd ? 'low' : 'high');
     this.hud = new Hud(document.getElementById('hud')!);
@@ -213,6 +228,7 @@ export class Game {
     this.post.setSize(w, h);
     this.rig.setAspect(w / h);
     this.particles.setViewport(h * this.pixelRatio, this.rig.camera.fov);
+    this.embers.setViewport(h * this.pixelRatio, this.rig.camera.fov);
     (this.outlineMat.userData.outline.uResolution.value as THREE.Vector2).set(w, h);
   }
 
@@ -243,6 +259,7 @@ export class Game {
       if (this.state === 'aim') this.release();
       else if (this.state === 'flight') {
         this.steerInput = 0;
+        this.steerInputY = 0;
         if (moved < 12 && performance.now() - p.t0 < 220) this.director.skip();
       }
     };
@@ -272,7 +289,9 @@ export class Game {
       this.audio.stretch(this.aim.cancelled ? 0 : this.aim.power);
     } else if (this.state === 'flight') {
       // Report: relative horizontal drag from wherever the finger lands -> target sideways speed.
+      // In The Fall the camera looks straight down, so dragging up/down steers forward/back too.
       this.steerInput = THREE.MathUtils.clamp(dx / STEER.dragPixelsForFull, -1, 1);
+      this.steerInputY = THREE.MathUtils.clamp(-dy / STEER.dragPixelsForFull, -1, 1);
     }
   }
 
@@ -314,6 +333,8 @@ export class Game {
     this.rig.snapAim(this.sling.pouch);
     this.farthest = 0;
     this.farthestAt = 0;
+    this.rescues = 0;
+    this.steerInput = this.steerInputY = this.steerSmoothed = this.steerSmoothedY = 0;
     this.bannerZone = null;
     this.hintTimer = 0;
     this.stats.runs++;
@@ -376,21 +397,41 @@ export class Game {
     } else if (this.state === 'flight' || this.state === 'landed') {
       // Sideways steering at the centre of mass, capped at 0.35 g (report).
       const keySteer = (this.keys.has('ArrowRight') || this.keys.has('d') ? 1 : 0) - (this.keys.has('ArrowLeft') || this.keys.has('a') ? 1 : 0);
+      const keySteerY = (this.keys.has('ArrowUp') || this.keys.has('w') ? 1 : 0) - (this.keys.has('ArrowDown') || this.keys.has('s') ? 1 : 0);
       const input = keySteer !== 0 ? keySteer : this.steerInput;
+      const inputY = keySteerY !== 0 ? keySteerY : this.steerInputY;
       this.steerSmoothed += (input - this.steerSmoothed) * (1 - Math.exp(-dt / 0.1));
+      this.steerSmoothedY += (inputY - this.steerSmoothedY) * (1 - Math.exp(-dt / 0.1));
       if (this.state === 'flight') {
         // Steering is sideways across the track, wherever the track points.
-        const right = this.course.frameAt(com).right;
-        const target = this.steerSmoothed * STEER.targetSpeed;
+        const frame = this.course.frameAt(com);
         let scale = this.simT < this.steerDampUntil ? STEER.afterImpactScale : 1;
         scale *= this.director.steeringBoost;
-        const maxA = STEER.maxAccelG * 9.81 * scale;
-        const a = THREE.MathUtils.clamp((target - vel.dot(right)) / STEER.response, -maxA, maxA);
-        steer.copy(right).multiplyScalar(a);
-        // Downhill assist: an arcade push along the track when he bogs down, so runs flow.
-        const frame = this.course.frameAt(com);
-        const along = vel.dot(frame.tangent);
-        if (along < 10 && frame.segment > 1 && frame.segment < 11) steer.addScaledVector(frame.tangent, Math.min(9, (10 - along) * 1.4));
+        if (frame.kind === 'fall') {
+          // The Fall: aim for the bullseye in two dimensions, with a little more authority.
+          const maxA = STEER.maxAccelG * 9.81 * scale * STEER.fallAuthority;
+          const right = this.course.craterRight;
+          const fwd = this.course.craterForward;
+          const ax = THREE.MathUtils.clamp((this.steerSmoothed * STEER.fallSpeed - vel.dot(right)) / STEER.response, -maxA, maxA);
+          const az = THREE.MathUtils.clamp((this.steerSmoothedY * STEER.fallSpeed - vel.dot(fwd)) / STEER.response, -maxA, maxA);
+          // Only steer when there is input: otherwise momentum carries him.
+          if (Math.abs(this.steerSmoothed) > 0.05) steer.addScaledVector(right, ax);
+          if (Math.abs(this.steerSmoothedY) > 0.05) steer.addScaledVector(fwd, az);
+        } else {
+          const right = frame.right;
+          const target = this.steerSmoothed * STEER.targetSpeed;
+          const maxA = STEER.maxAccelG * 9.81 * scale;
+          const a = THREE.MathUtils.clamp((target - vel.dot(right)) / STEER.response, -maxA, maxA);
+          steer.copy(right).multiplyScalar(a);
+        }
+        // Downhill assist: an arcade push along the track (never into it) when he bogs down on the ground.
+        if ((frame.kind === 'stairs' || frame.kind === 'road') && this.ragdoll.parts.some((p) => p.contact)) {
+          const downhill = frame.tangent.clone();
+          if (downhill.y < 0) downhill.y *= 0.5;
+          downhill.normalize();
+          const along = vel.dot(downhill);
+          if (along < STEER.assistBelow) steer.addScaledVector(downhill, Math.min(STEER.assistMax, (STEER.assistBelow - along) * 1.2));
+        }
       }
     }
 
@@ -417,7 +458,7 @@ export class Game {
       this.pendingEvents.push(...evs);
       this.checkGlass(dt);
       this.checkWhaleSpout(dt);
-      this.checkStuck(dt, com, vel);
+      this.checkStuck(com, vel);
     } else {
       for (const p of this.ragdoll.parts) p.contact = false;
     }
@@ -534,26 +575,51 @@ export class Game {
   }
 
   /**
-   * Rescue stalls by depth progress, not speed: riding the whale or a piston
-   * still counts as moving. No new low point for ~1 s means he is stuck.
+   * Rescue stalls by track progress, not speed: riding the whale or a piston
+   * still counts as moving. No new progress for ~1 s means he is stuck: first
+   * the HODL hand hops him loose, then harder, then hell spits him further down.
+   * Falling off the course respawns him on it.
    */
-  private checkStuck(dt: number, com: THREE.Vector3, vel: THREE.Vector3): void {
+  private checkStuck(com: THREE.Vector3, vel: THREE.Vector3): void {
     if (this.state !== 'flight') return;
-    void dt;
     const frame = this.course.frameAt(com);
+    const offTrack = com.distanceTo(frame.point) > 28 || (frame.kind !== 'fall' && com.y < frame.point.y - 18);
+    if (offTrack) {
+      this.respawn(Math.max(frame.s, this.farthest) + 6, 'HELL SPAT YOU BACK');
+      return;
+    }
     if (frame.s > this.farthest + 1 || this.simT < 0.5) {
       this.farthest = Math.max(this.farthest, frame.s);
       this.farthestAt = this.simT;
+      this.rescues = 0;
       return;
     }
-    if (this.simT - this.farthestAt < 1.1 || frame.segment >= 11) return;
+    if (this.simT - this.farthestAt < 1.1) return;
     this.farthestAt = this.simT;
-    // The HODL hand shakes him loose (report: rescue a stuck run): onward and back to the middle.
-    const toCenter = frame.point.clone().sub(com).dot(frame.right);
-    const want = frame.tangent.clone().multiplyScalar(7).add(new THREE.Vector3(0, 4, 0)).addScaledVector(frame.right, THREE.MathUtils.clamp(toCenter, -3, 3));
-    const kick = want.sub(vel.clone().multiplyScalar(0.5));
+    this.rescues++;
+    if (this.rescues >= 3) {
+      this.respawn(this.farthest + 5, 'UNSTUCK');
+      return;
+    }
+    const flat = frame.tangent.clone().setY(0);
+    if (flat.lengthSq() < 0.01) flat.copy(this.course.craterCenter).sub(com).setY(0);
+    flat.normalize();
+    const toCenter = frame.point.clone().sub(com).setY(0);
+    const want = flat.multiplyScalar(5 + this.rescues * 2).add(new THREE.Vector3(0, 5 + this.rescues * 3, 0)).addScaledVector(toCenter, Math.min(1, 3 / Math.max(0.1, toCenter.length())));
+    const kick = want.sub(vel.clone().multiplyScalar(0.6));
     for (const p of this.ragdoll.parts) p.body.applyImpulse({ x: kick.x * p.mass, y: kick.y * p.mass, z: kick.z * p.mass }, true);
     this.pendingCallouts.push({ text: 'SHAKEN OUT', at: com.clone(), style: 'gate' });
+  }
+
+  private respawn(s: number, text: string): void {
+    const fall = this.course.track.section('fall');
+    const at = this.course.track.at(s >= fall.s0 ? Math.min(s, fall.s1 - 3) : Math.min(s, fall.s0 - 2), 0, 1.6);
+    const com = this.ragdoll.centerOfMass();
+    this.ragdoll.teleport(at.p.clone().sub(com), at.f.clone().multiplyScalar(7));
+    this.farthest = Math.max(this.farthest, s);
+    this.farthestAt = this.simT;
+    this.rescues = 0;
+    this.pendingCallouts.push({ text, at: at.p.clone(), style: 'gate' });
   }
 
   private triggerSensor(s: Sensor): void {
@@ -715,8 +781,10 @@ export class Game {
     if (this.state === 'flight') this.announceZone(this.frameNow.zone);
 
     this.updateAtmosphere(realDt);
-    this.particles.update(realDt * Math.max(timeScale, 0.12), this.rig.camera.position);
-    this.post.update(this.director.grade, Math.max(0, -vel.y), this.realT);
+    this.particles.update(realDt * Math.max(timeScale, 0.12));
+    const em = EMBERS[this.frameNow.zone.id];
+    this.embers.update(this.realT, this.rig.camera.position, em[0], em[1], em[2], realDt);
+    this.post.update(this.director.grade, this.state === 'flight' ? vel.length() : 0, this.realT);
     this.post.render(realDt);
 
     this.hud.update(realDt);
@@ -908,6 +976,7 @@ export class Game {
   }
 
   private exposeTestHooks(): void {
+    (window as unknown as { __gameObj: unknown }).__gameObj = this;
     (window as unknown as { __ngd: unknown }).__ngd = {
       fling: (dx: number, dy: number) => {
         if (this.state !== 'aim') return false;
@@ -915,11 +984,38 @@ export class Game {
         this.launch(aim.velocity, aim.power);
         return true;
       },
-      steer: (x: number) => { this.steerInput = THREE.MathUtils.clamp(x, -1, 1); },
+      steer: (x: number, y = 0) => { this.steerInput = THREE.MathUtils.clamp(x, -1, 1); this.steerInputY = THREE.MathUtils.clamp(y, -1, 1); },
       again: () => this.resetRun(),
       aim: (dx: number, dy: number) => {
         const aim = this.sling.aimFromDrag(dx, dy, window.innerHeight);
         this.sling.setPull(aim.pull, aim.velocity);
+      },
+      // Headless course-flow test: run physics only, as fast as possible, and trace the run.
+      simulate: (seconds: number, steerPlan: [number, number][] = []) => {
+        const trace: { t: number; s: number; seg: number; name: string; y: number; v: number }[] = [];
+        const steps = Math.round(seconds / PHYSICS.step);
+        let landedT = -1;
+        for (let i = 0; i < steps; i++) {
+          for (const [t, x] of steerPlan) if (Math.abs(this.simT - t) < PHYSICS.step / 2) this.steerInput = x;
+          this.fixedStep();
+          this.pendingEvents = [];
+          this.pendingSensors = [];
+          this.pendingGlass = [];
+          this.pendingCallouts = [];
+          if (this.state === 'landed' && landedT < 0) landedT = this.simT;
+          if (i % 30 === 0) {
+            const com = this.ragdoll.centerOfMass();
+            const f = this.course.frameAt(com);
+            trace.push({ t: +this.simT.toFixed(2), s: +f.s.toFixed(1), seg: f.section, name: f.name, y: +com.y.toFixed(1), v: +this.ragdoll.velocity(new THREE.Vector3()).length().toFixed(1) });
+          }
+          if (landedT > 0 && this.simT - landedT > 2) break;
+        }
+        const com = this.ragdoll.centerOfMass();
+        return {
+          state: this.state, landedT: +landedT.toFixed(2), damage: this.damage.total, hits: this.damage.hits,
+          broken: [...this.damage.breakOrder], well: this.course.wellAt(com).label, com: com.toArray().map((n) => +n.toFixed(1)),
+          trackLength: +this.course.length.toFixed(1), trace,
+        };
       },
     };
   }

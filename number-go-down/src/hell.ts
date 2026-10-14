@@ -52,8 +52,10 @@ export function lavaMaterial(): THREE.ShaderMaterial {
       ${LAVA_GLSL}
       void main() {
         vec3 c = lava(vWorld.xz * 0.12, time);
+        // Far lava sinks into the haze: depth reads, and the sea never becomes a wall.
         float fog = 1.0 - exp(-fogDensity * fogDensity * vDepth * vDepth);
-        gl_FragColor = vec4(mix(c, fogColor * 1.4, fog * 0.85), 1.0);
+        c *= 1.0 - 0.55 * smoothstep(80.0, 420.0, vDepth);
+        gl_FragColor = vec4(mix(c, fogColor * 1.15, min(1.0, fog * 1.05)), 1.0);
       }`,
     toneMapped: false,
   });
@@ -80,7 +82,7 @@ export function tickLava(time: number, fog?: THREE.FogExp2): void {
     lavaMat.uniforms.time.value = time;
     if (fog) {
       (lavaMat.uniforms.fogColor.value as THREE.Color).copy(fog.color);
-      lavaMat.uniforms.fogDensity.value = fog.density * 0.45;
+      lavaMat.uniforms.fogDensity.value = fog.density * 0.8;
     }
   }
   if (channelMat) channelMat.uniforms.time.value = time;
@@ -185,7 +187,12 @@ export function rockSlab(width: number, height: number, length: number, transfor
 
 export interface SceneryOptions {
   pathPoints: THREE.Vector3[];
-  rockMat: THREE.Material;
+  seaY: number;
+  /** A hole in the lava sea where The Fall's shaft goes through it. */
+  hole: THREE.Vector3;
+  holeRadius: number;
+  /** Fraction of the path where The Fall begins (no billboards past it). */
+  fallStart: number;
 }
 
 /** Distant spires, burning candle towers, tumbling coins and joke billboards. */
@@ -194,6 +201,7 @@ export class Scenery {
   private coins: THREE.InstancedMesh;
   private coinData: { p: THREE.Vector3; spin: THREE.Vector3; rot: THREE.Euler; fall: number }[] = [];
   private flames: THREE.Mesh[] = [];
+  private seaY = -300;
 
   constructor(scene: THREE.Scene, opts: SceneryOptions) {
     scene.add(this.group);
@@ -206,11 +214,13 @@ export class Scenery {
       return path[i].clone().lerp(path[i + 1], f - i);
     };
 
-    // Lava sea.
-    const sea = new THREE.Mesh(new THREE.PlaneGeometry(1600, 1600, 1, 1), lavaMaterial());
+    // Lava sea, with a hole for the shaft.
+    const seaY = opts.seaY;
+    const sea = new THREE.Mesh(new THREE.RingGeometry(opts.holeRadius, 1400, 64, 4), lavaMaterial());
     sea.rotation.x = -Math.PI / 2;
-    sea.position.set(0, -300, -200);
+    sea.position.set(opts.hole.x, seaY, opts.hole.z);
     this.group.add(sea);
+    this.seaY = seaY;
 
     // Rock spires: jagged cones rising out of the lava.
     const spireMat = new THREE.MeshToonMaterial({ color: 0x2a1418, emissive: 0x3a0804 });
@@ -231,7 +241,7 @@ export class Scenery {
       }
       geo.computeVertexNormals();
       const m = new THREE.Mesh(geo, spireMat);
-      m.position.set(c.x + side * dist, -300 + h / 2 - 10, c.z + (rand() - 0.5) * 60);
+      m.position.set(c.x + side * dist, seaY + h / 2 - 10, c.z + (rand() - 0.5) * 60);
       m.rotation.y = rand() * Math.PI;
       this.group.add(m);
     }
@@ -240,7 +250,7 @@ export class Scenery {
     const candleMat = new THREE.MeshToonMaterial({ color: 0x9c0a22, emissive: 0x3a0008 });
     const flameMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(0xff7a20).multiplyScalar(2.4), toneMapped: false, fog: false });
     for (let k = 0; k < 14; k++) {
-      const c = along(0.1 + (k / 14) * 0.85);
+      const c = along(0.05 + (k / 14) * opts.fallStart);
       const side = k % 2 ? 1 : -1;
       const w = 6 + rand() * 6;
       const h = 90 + rand() * 160;
@@ -254,7 +264,7 @@ export class Scenery {
       flame.position.y = h / 2 + h * 0.12 + w * 0.5;
       g.add(flame);
       this.flames.push(flame);
-      g.position.set(c.x + side * (40 + rand() * 50), c.y - 120 + rand() * 60, c.z - 10 + rand() * 20);
+      g.position.set(c.x + side * (40 + rand() * 50), Math.max(seaY + h / 2 - 20, c.y - 120 + rand() * 60), c.z - 10 + rand() * 20);
       this.group.add(g);
     }
 
@@ -281,7 +291,7 @@ export class Scenery {
       ['LIQUIDATED', '#ff8a3a'], ['NUMBER GO DOWN', '#ff2a4d'],
     ];
     jokes.forEach(([text, color], k) => {
-      const t = 0.06 + (k / jokes.length) * 0.82;
+      const t = 0.05 + (k / jokes.length) * (opts.fallStart - 0.08);
       const c = along(t);
       const next = along(Math.min(1, t + 0.02));
       const f = next.clone().sub(c).setY(0).normalize();
@@ -305,7 +315,7 @@ export class Scenery {
     this.coinData.forEach((c, k) => {
       c.rot.x += c.spin.x * dt; c.rot.y += c.spin.y * dt; c.rot.z += c.spin.z * dt;
       c.p.y -= c.fall * dt;
-      if (c.p.y < -280) c.p.y += 330;
+      if (c.p.y < this.seaY) c.p.y += 330;
       m.compose(c.p, q.setFromEuler(c.rot), new THREE.Vector3(1, 1, 1));
       this.coins.setMatrixAt(k, m);
     });

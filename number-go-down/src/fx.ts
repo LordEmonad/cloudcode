@@ -143,9 +143,6 @@ export class Particles {
   private glow: ParticleSystem;
   private solid: ParticleSystem;
   private stars: ParticleSystem;
-  private embers: ParticleSystem;
-  private emberCenter = new THREE.Vector3();
-  private emberHalf = new THREE.Vector3(6, 14, 3);
 
   constructor(scene: THREE.Scene) {
     const dot = softDotTexture();
@@ -153,19 +150,12 @@ export class Particles {
     this.glow = new ParticleSystem({ texture: dot, additive: true, max: 700 });
     this.solid = new ParticleSystem({ texture: dot, additive: false, max: 500 });
     this.stars = new ParticleSystem({ texture: star, additive: false, max: 120 });
-    this.embers = new ParticleSystem({ texture: dot, additive: true, max: 160 });
-    scene.add(this.embers.points, this.solid.points, this.glow.points, this.stars.points);
-    for (let i = 0; i < 160; i++) {
-      _v.set((Math.random() - 0.5) * 12, (Math.random() - 0.5) * 28, (Math.random() - 0.5) * 6);
-      const hot = Math.random() < 0.7;
-      _c.set(hot ? 0xff5a3c : 0xffcf3a);
-      this.embers.emit(_v, new THREE.Vector3((Math.random() - 0.5) * 0.4, 0.6 + Math.random() * 1.6, 0), _c, 0.55, 0.05 + Math.random() * 0.08, 1e9, 0, 0);
-    }
+    scene.add(this.solid.points, this.glow.points, this.stars.points);
   }
 
   setViewport(heightPx: number, fovDeg: number): void {
     const scale = heightPx / (2 * Math.tan(THREE.MathUtils.degToRad(fovDeg) / 2));
-    for (const s of [this.glow, this.solid, this.stars, this.embers]) s.setScale(scale);
+    for (const s of [this.glow, this.solid, this.stars]) s.setScale(scale);
   }
 
   /** Sparks and dust for a hit; more and bigger for stronger hits. */
@@ -225,12 +215,92 @@ export class Particles {
     }
   }
 
-  update(dt: number, cameraPos: THREE.Vector3): void {
+  update(dt: number): void {
     this.glow.update(dt);
     this.solid.update(dt);
     this.stars.update(dt);
-    this.emberCenter.set(cameraPos.x, cameraPos.y, 0);
-    this.embers.update(dt, { center: this.emberCenter, half: this.emberHalf });
+  }
+}
+
+// ------------------------------------------------------------------ embers
+
+/**
+ * Hell's air: a few thousand embers rising and swirling around the camera,
+ * wrapped in a box that follows it. All motion is in the vertex shader.
+ */
+export class EmberField {
+  readonly points: THREE.Points;
+  private uniforms = {
+    uTime: { value: 0 },
+    uCenter: { value: new THREE.Vector3() },
+    uBox: { value: new THREE.Vector3(70, 46, 70) },
+    uColorA: { value: new THREE.Color(0xff6a2a) },
+    uColorB: { value: new THREE.Color(0xffcf3a) },
+    uScale: { value: 600 },
+    uDensity: { value: 1 },
+  };
+
+  constructor(scene: THREE.Scene, count = 2200) {
+    const seeds = new Float32Array(count * 4);
+    for (let i = 0; i < seeds.length; i++) seeds[i] = Math.random();
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(count * 3), 3));
+    geo.setAttribute('seed', new THREE.BufferAttribute(seeds, 4));
+    const mat = new THREE.ShaderMaterial({
+      uniforms: this.uniforms,
+      vertexShader: `
+        attribute vec4 seed;
+        uniform float uTime; uniform vec3 uCenter; uniform vec3 uBox; uniform float uScale; uniform float uDensity;
+        varying float vHeat; varying float vAlpha;
+        void main() {
+          vec3 p = seed.xyz * uBox;
+          float t = uTime;
+          p.y += t * (1.2 + seed.w * 3.0);
+          p.x += sin(t * (0.4 + seed.w) + seed.y * 40.0) * 2.2;
+          p.z += cos(t * (0.3 + seed.x * 0.6) + seed.z * 30.0) * 2.2;
+          vec3 lo = uCenter - uBox * 0.5;
+          p = lo + mod(p - lo, uBox);
+          vec4 mv = modelViewMatrix * vec4(p, 1.0);
+          float flick = 0.6 + 0.4 * sin(t * (6.0 + seed.w * 9.0) + seed.x * 60.0);
+          vHeat = seed.w;
+          // Fade near the box faces so wrapping never pops; thin out with uDensity.
+          vec3 q = abs(p - uCenter) / (uBox * 0.5);
+          float edge = 1.0 - smoothstep(0.75, 1.0, max(max(q.x, q.y), q.z));
+          vAlpha = flick * edge * step(seed.x * 0.999, uDensity);
+          gl_PointSize = (0.05 + seed.y * 0.09) * uScale / max(0.5, -mv.z);
+          gl_Position = projectionMatrix * mv;
+        }`,
+      fragmentShader: `
+        uniform vec3 uColorA; uniform vec3 uColorB;
+        varying float vHeat; varying float vAlpha;
+        void main() {
+          vec2 d = gl_PointCoord - 0.5;
+          float a = smoothstep(0.5, 0.0, length(d));
+          gl_FragColor = vec4(mix(uColorA, uColorB, vHeat) * 2.2, a * a * vAlpha);
+          if (gl_FragColor.a < 0.01) discard;
+        }`,
+      transparent: true,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+      fog: false,
+    });
+    this.points = new THREE.Points(geo, mat);
+    this.points.frustumCulled = false;
+    this.points.renderOrder = 4;
+    scene.add(this.points);
+  }
+
+  setViewport(heightPx: number, fovDeg: number): void {
+    this.uniforms.uScale.value = heightPx / (2 * Math.tan(THREE.MathUtils.degToRad(fovDeg) / 2));
+  }
+
+  update(time: number, camera: THREE.Vector3, a: THREE.ColorRepresentation, b: THREE.ColorRepresentation, density: number, dt: number): void {
+    this.uniforms.uTime.value = time;
+    this.uniforms.uCenter.value.copy(camera);
+    const k = 1 - Math.exp(-dt * 1.5);
+    this.uniforms.uColorA.value.lerp(_c.set(a), k);
+    this.uniforms.uColorB.value.lerp(_c.set(b), k);
+    this.uniforms.uDensity.value += (density - this.uniforms.uDensity.value) * k;
   }
 }
 
@@ -320,7 +390,7 @@ export class Post {
     u.get('desat')!.value = p.desat;
     u.get('cool')!.value = p.cool;
     u.get('flash')!.value = p.flash;
-    u.get('speed')!.value = THREE.MathUtils.clamp((fallSpeed - 14) / 16, 0, 1);
+    u.get('speed')!.value = THREE.MathUtils.clamp((fallSpeed - 12) / 14, 0, 1);
     u.get('seed')!.value = t;
     const o = 0.0035 * p.chroma;
     this.chroma.offset.set(o, o * 0.6);

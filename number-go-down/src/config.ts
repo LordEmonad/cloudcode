@@ -10,7 +10,7 @@ export const PHYSICS = {
   pgsIterations: 4,
   gravity: -13.5, // a little heavier than Earth so falls read as snappy
   // Quadratic air drag tuned for a terminal speed of roughly 30 m/s.
-  dragPerSpeed: 0.022, // terminal speed sqrt(g / drag) ~ 25 m/s
+  dragPerSpeed: 0.014, // terminal speed sqrt(g / drag) ~ 25 m/s
   limbDragBoost: 1.35, // limbs trail behind the torso, the classic falling pose
   maxAngularSpeed: 34, // report: cap angular speed at 20-40 rad/s
 };
@@ -45,6 +45,10 @@ export const STEER = {
   afterImpactScale: 0.3,
   afterImpactTime: 0.25,
   slowmoBoost: 2,
+  assistBelow: 14, // m/s along the track: below this, the hill gives him a shove
+  assistMax: 10, // m/s^2
+  fallSpeed: 7, // m/s across the shaft at full drag
+  fallAuthority: 1.5,
 };
 
 export const LAUNCH = {

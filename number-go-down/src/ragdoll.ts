@@ -642,6 +642,18 @@ export class Ragdoll {
     }
   }
 
+  /** Move the whole body by an offset, keeping its pose (respawns). Interpolation snaps too. */
+  teleport(offset: THREE.Vector3, velocity: THREE.Vector3): void {
+    for (const part of this.parts) {
+      const t = part.body.translation();
+      part.body.setTranslation({ x: t.x + offset.x, y: t.y + offset.y, z: t.z + offset.z }, true);
+      part.body.setLinvel({ x: velocity.x, y: velocity.y, z: velocity.z }, true);
+      part.body.setAngvel({ x: 0, y: 0, z: 0 }, true);
+      part.currPos.add(offset);
+      part.prevPos.copy(part.currPos);
+    }
+  }
+
   setVelocity(v: THREE.Vector3, spin?: THREE.Vector3): void {
     for (const part of this.parts) {
       part.body.setLinvel({ x: v.x, y: v.y, z: v.z }, true);

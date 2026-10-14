@@ -22,6 +22,9 @@ export class CameraRig {
   private pos = new THREE.Vector3(0, 5, 10);
   private look = new THREE.Vector3(0, 0, -10);
   private fwd = new THREE.Vector3(0, 0, -1);
+  private flatFwd = new THREE.Vector3(0, 0, -1);
+  /** Horizontal direction toward the crater's far wall (set by the game). */
+  restForward = new THREE.Vector3(0, 0, -1);
   private dist = 8;
   private height = 3;
   private t = 0;
@@ -54,16 +57,17 @@ export class CameraRig {
 
   snapAim(pouch: THREE.Vector3): void {
     this.fwd.set(0, 0, -1);
+    this.flatFwd.set(0, 0, -1);
     this.aimPose(pouch, 0, this.pos, this.look);
     this.camera.position.copy(this.pos);
     this.camera.lookAt(this.look);
   }
 
   private aimPose(pouch: THREE.Vector3, pull: number, pos: THREE.Vector3, look: THREE.Vector3): void {
-    // Over Emonad's shoulder... from behind the slingshot, looking through the Gates of Hell.
-    // Eye level with Emonad so his face reads; hell opens up behind him.
-    pos.set(pouch.x * 0.4, pouch.y + 1.0 + pull * 0.5, pouch.z + 5.2 + pull * 3.4);
-    look.set(pouch.x * 0.15, pouch.y - 3.4, pouch.z - 22);
+    // A crane shot from behind and above the slingshot: Emonad in the pouch,
+    // the Gates of Hell, and the road winding down into the abyss beyond.
+    pos.set(pouch.x * 0.4, pouch.y + 5.2 + pull * 1.0, pouch.z + 7.6 + pull * 2.6);
+    look.set(pouch.x * 0.2, pouch.y - 9, pouch.z - 26);
   }
 
   update(dt: number, target: THREE.Vector3, velocity: THREE.Vector3, mode: CamMode, frame: Frame | null, closeUp: THREE.Vector3, pull = 0, restCenter?: THREE.Vector3): void {
@@ -77,28 +81,33 @@ export class CameraRig {
       this.aimPose(target, pull, desiredPos, desiredLook);
       followRate = 6;
     } else if (mode === 'rest' && restCenter) {
-      desiredLook.copy(restCenter).add(new THREE.Vector3(target.x * 0.3, 0.6, 0));
-      desiredPos.copy(restCenter).add(new THREE.Vector3(target.x * 0.2, 12, 6.5));
+      // Hanging over the bullseye, the far wall at the top of the screen.
+      desiredLook.copy(restCenter).lerp(target, 0.35);
+      desiredPos.copy(restCenter).add(new THREE.Vector3(0, 13, 0)).addScaledVector(this.restForward, -3.5);
+      this.flatFwd.lerp(this.restForward, 1 - Math.exp(-dt * 2)).normalize();
       followRate = 2.5;
     } else if (frame) {
       // Smooth the track direction so corners and the drop swing the camera, not snap it.
       this.fwd.lerp(frame.tangent, 1 - Math.exp(-dt * 2.4)).normalize();
       const f = this.fwd;
-      // "Up" for the camera: world up with the forward component removed.
-      const up = UP.clone().addScaledVector(f, -UP.dot(f));
-      if (up.lengthSq() < 0.05) up.set(0, 0, 1);
-      up.normalize();
+      const flat = new THREE.Vector3(f.x, 0, f.z);
+      if (flat.lengthSq() > 0.02) this.flatFwd.lerp(flat.normalize(), 1 - Math.exp(-dt * 3)).normalize();
       const vertical = THREE.MathUtils.clamp(-f.y, 0, 1);
-      const desiredDist = THREE.MathUtils.lerp(7, 10.5, THREE.MathUtils.clamp(speed / 26, 0, 1)) + vertical * 5;
+      // "Up" for the camera: world up with the forward component removed; over a sheer drop, back the way he came.
+      const up = UP.clone().addScaledVector(f, -UP.dot(f));
+      if (vertical > 0.85 || up.lengthSq() < 0.05) up.copy(this.flatFwd).negate();
+      up.normalize();
+      const fast = THREE.MathUtils.clamp(speed / 26, 0, 1);
+      const desiredDist = THREE.MathUtils.lerp(4.8, 7.6, fast) + vertical * 5;
       this.dist += (desiredDist - this.dist) * (1 - Math.exp(-dt * 2));
-      this.height += (THREE.MathUtils.lerp(3.4, 1.5, vertical) - this.height) * (1 - Math.exp(-dt * 2));
+      this.height += (THREE.MathUtils.lerp(2.1, 1.4, vertical) - this.height) * (1 - Math.exp(-dt * 2));
       // Stay on the track's centreline sideways, but follow him most of the way.
       const lateral = target.clone().sub(frame.point).dot(frame.right);
-      const anchor = frame.point.clone().addScaledVector(frame.right, lateral * 0.7);
+      const anchor = frame.point.clone().addScaledVector(frame.right, lateral * 0.75);
       anchor.addScaledVector(UP, target.clone().sub(frame.point).dot(UP) * (1 - vertical));
       if (vertical > 0.5) anchor.copy(target);
       desiredPos.copy(anchor).addScaledVector(f, -this.dist).addScaledVector(up, this.height);
-      desiredLook.copy(target).addScaledVector(f, THREE.MathUtils.lerp(5, 12, THREE.MathUtils.clamp(speed / 26, 0, 1))).addScaledVector(up, -1.2);
+      desiredLook.copy(target).addScaledVector(f, THREE.MathUtils.lerp(4, 10, fast)).addScaledVector(up, -0.8);
       followRate = 6 + Math.min(speed, 30) * 0.25;
     } else {
       desiredPos.copy(target).add(new THREE.Vector3(0, 4, 8));
@@ -136,7 +145,8 @@ export class CameraRig {
 
     this.camera.position.copy(camPos).add(this.kick).add(new THREE.Vector3(ox, oy, 0));
     this.camera.up.copy(UP);
-    if (Math.abs(camLook.clone().sub(this.camera.position).normalize().y) > 0.97) this.camera.up.set(0, 0, -1);
+    // Looking straight down: the way he is heading is the top of the screen.
+    if (Math.abs(camLook.clone().sub(this.camera.position).normalize().y) > 0.9) this.camera.up.copy(this.flatFwd);
     this.camera.lookAt(camLook.x + this.kick.x * 0.5, camLook.y + this.kick.y * 0.5, camLook.z + this.kick.z * 0.5);
     this.camera.rotateZ(roll);
 
