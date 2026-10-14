@@ -4,10 +4,10 @@ import type { ImpactEvent } from './damage';
 
 // Presentation tiers from the report:
 //  T1 bump   : no freeze, small trauma, tiny popup
-//  T2 slam   : 40-80 ms freeze, directional kick, BONK, chroma pulse
-//  T3 break  : 20 + 15 x bone size ms freeze, X-ray blink, CRACK!
-//  T4 cinema : freeze -> ease to 0.25x -> hold -> ease out, zoom + orbit, full X-ray
-// T4 is rationed: max(2, run / 12 s) per run, 6.5 s cooldown, novelty gate.
+//  T2 slam   : 50-90 ms freeze, directional kick, BONK, chroma pulse
+//  T3 break  : 90-180 ms freeze, white flash, X-ray blink, CRACK!
+//  T4 cinema : freeze -> ease to 0.22x -> hold -> ease out, zoom + orbit, full X-ray
+// T4 is rationed: max(2, run / 8 s) per run, 4.5 s cooldown, novelty gate.
 
 export type Tier = 1 | 2 | 3 | 4;
 
@@ -34,7 +34,7 @@ export class Director {
   vibrate = 0; // visual-only mesh vibration amount (Sakurai: shake the victim)
   readonly closeUp = new THREE.Vector3();
   orbitSign = 1;
-  grade = { desat: 0, cool: 0, grain: 0, flash: 0, chroma: 0, vignette: 0.35 };
+  grade = { desat: 0, cool: 0, grain: 0, flash: 0, chroma: 0, vignette: 0.35, heat: 0 };
   steeringBoost = 1;
   inCinematic = false;
   private freezeUntil = 0;
@@ -59,6 +59,7 @@ export class Director {
     this.lastCinematicSimT = -100;
     this.biggest = 0;
     this.inCinematic = false;
+    this.grade.heat = 0;
   }
 
   /** Decide each event's presentation tier. Returns the tiers for the FX layer. */
@@ -85,7 +86,7 @@ export class Director {
   private cinematicAllowed(ev: ImpactEvent, simT: number): boolean {
     if (this.settings.cinematics === 'off') return false;
     if (this.slowmo) return false;
-    const budget = Math.max(2, Math.floor(simT / 12) + 1);
+    const budget = Math.max(2, Math.floor(simT / SHOW.cinematicSecondsPerRun) + 1);
     if (this.cinematicCount >= budget) return false;
     if (simT - this.lastCinematicSimT < SHOW.cinematicCooldown) return false;
     const novel = ev.firstBreakOfBone || ev.strength >= this.biggest * 1.25;
@@ -99,7 +100,7 @@ export class Director {
     this.lastCinematicSimT = simT;
     this.biggest = Math.max(this.biggest, ev.strength);
     // Later cinematics in a run run shorter (report: 15-20% each).
-    const shrink = finale ? 1.35 : Math.pow(0.83, this.cinematicCount - 1);
+    const shrink = finale ? 1.5 : Math.pow(0.83, this.cinematicCount - 1);
     this.freezeUntil = this.now + 0.1;
     this.slowmo = {
       start: this.now + 0.1,
@@ -113,23 +114,27 @@ export class Director {
     this.orbitSign = ev.normal.x >= 0 ? 1 : -1;
     this.xrayUntil = this.now + 0.1 + SHOW.slowmoEaseIn + SHOW.slowmoHold * shrink;
     this.vibrate = 1;
-    this.flash(0.9);
+    this.flash(1);
     this.grade.chroma = 1;
+    this.grade.heat = 1;
   }
 
   private breakBeat(ev: ImpactEvent): void {
     const size = THREE.MathUtils.clamp(ev.part.spec.points / 300, 2.5, 8);
-    this.freeze((20 + 15 * size) / 1000);
-    this.xrayUntil = Math.max(this.xrayUntil, this.now + 0.22);
-    this.vibrate = Math.max(this.vibrate, 0.8);
-    this.grade.chroma = Math.max(this.grade.chroma, 0.8);
-    this.flash(0.35);
+    this.freeze((70 + 14 * size) / 1000);
+    this.xrayUntil = Math.max(this.xrayUntil, this.now + 0.25);
+    this.vibrate = Math.max(this.vibrate, 0.9);
+    this.grade.chroma = Math.max(this.grade.chroma, 0.9);
+    this.grade.heat = Math.max(this.grade.heat, 0.7);
+    this.flash(0.55);
   }
 
   private slamBeat(ev: ImpactEvent): void {
-    this.freeze(THREE.MathUtils.lerp(0.04, 0.08, THREE.MathUtils.clamp((ev.strength - 0.35) / 0.35, 0, 1)));
-    this.vibrate = Math.max(this.vibrate, 0.5);
-    this.grade.chroma = Math.max(this.grade.chroma, 0.5);
+    this.freeze(THREE.MathUtils.lerp(0.05, 0.09, THREE.MathUtils.clamp((ev.strength - 0.35) / 0.35, 0, 1)));
+    this.vibrate = Math.max(this.vibrate, 0.55);
+    this.grade.chroma = Math.max(this.grade.chroma, 0.55);
+    this.grade.heat = Math.max(this.grade.heat, 0.35);
+    if (ev.slam) this.flash(0.3);
   }
 
   /** The final crater impact always gets a cinematic (Peggle's last-peg rule). */
@@ -146,7 +151,15 @@ export class Director {
 
   liftOff(): void {
     // A short slow beat as he leaves the slingshot.
-    this.slowmo = { start: this.now, easeIn: 0.02, hold: 0.16, easeOut: 0.22, scale: 0.45, finale: false };
+    this.slowmo = { start: this.now, easeIn: 0.02, hold: 0.18, easeOut: 0.25, scale: 0.4, finale: false };
+    this.grade.heat = 0.6;
+  }
+
+  /** A SLAM: a quick dip in time so the tuck reads, then the drop. */
+  slam(): void {
+    if (this.slowmo) return;
+    this.slowmo = { start: this.now, easeIn: 0.02, hold: 0.08, easeOut: 0.12, scale: 0.5, finale: false };
+    this.grade.heat = Math.max(this.grade.heat, 0.5);
   }
 
   /** Tap to skip a cinematic (report). */
@@ -183,7 +196,7 @@ export class Director {
       if (this.slowmo) {
         const total = s.easeIn + s.hold + s.easeOut;
         const k = THREE.MathUtils.clamp(e / s.easeIn, 0, 1) * THREE.MathUtils.clamp((total - e) / s.easeOut, 0, 1);
-        cine = s.finale || s.scale < 0.4 ? k : 0;
+        cine = s.finale || s.scale < 0.35 ? k : 0;
         this.inCinematic = cine > 0.05;
       }
     }
@@ -197,12 +210,13 @@ export class Director {
     this.xray += (xrayTarget - this.xray) * (1 - Math.exp(-realDt * (xrayTarget ? 40 : 10)));
     this.vibrate = Math.max(0, this.vibrate - realDt * 5);
     const g = this.grade;
-    g.desat += ((this.inCinematic ? 0.3 : 0) - g.desat) * (1 - Math.exp(-realDt * 10));
-    g.cool += ((this.inCinematic ? 0.6 : 0) - g.cool) * (1 - Math.exp(-realDt * 10));
+    g.desat += ((this.inCinematic ? 0.25 : 0) - g.desat) * (1 - Math.exp(-realDt * 10));
+    g.cool += ((this.inCinematic ? 0.5 : 0) - g.cool) * (1 - Math.exp(-realDt * 10));
     g.grain += ((this.inCinematic ? 1 : 0) - g.grain) * (1 - Math.exp(-realDt * 10));
-    g.vignette += ((this.inCinematic ? 0.75 : 0.35) - g.vignette) * (1 - Math.exp(-realDt * 6));
+    g.vignette += ((this.inCinematic ? 0.75 : 0.38) - g.vignette) * (1 - Math.exp(-realDt * 6));
     g.flash = Math.max(0, g.flash - realDt * 7);
     g.chroma = Math.max(0, g.chroma - realDt * 4);
+    g.heat = Math.max(0, g.heat - realDt * 1.6);
   }
 }
 

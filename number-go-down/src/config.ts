@@ -8,9 +8,9 @@ export const PHYSICS = {
   // (scripts/snap-bisect6.mjs); 6/2 let the spine fold 90+ degrees.
   solverIterations: 8,
   pgsIterations: 4,
-  gravity: -13.5, // a little heavier than Earth so falls read as snappy
-  // Quadratic air drag tuned for a terminal speed of roughly 30 m/s.
-  dragPerSpeed: 0.014, // terminal speed sqrt(g / drag) ~ 25 m/s
+  gravity: -17, // heavy: falls read as violent, not floaty
+  // Quadratic air drag; terminal speed sqrt(g / drag).
+  dragPerSpeed: 0.009, // ~43 m/s terminal
   limbDragBoost: 1.35, // limbs trail behind the torso, the classic falling pose
   maxAngularSpeed: 34, // report: cap angular speed at 20-40 rad/s
 };
@@ -38,49 +38,63 @@ export const RAGDOLL = {
 };
 
 export const STEER = {
-  targetSpeed: 4.2, // report: +-4 m/s sideways
-  maxAccelG: 0.38, // report: start at 0.35 g
-  response: 0.2,
-  dragPixelsForFull: 90,
-  afterImpactScale: 0.3,
-  afterImpactTime: 0.25,
+  targetSpeed: 7.5, // m/s sideways at full drag: crosses the road in under a second
+  maxAccelG: 0.9, // real authority, not a nudge
+  response: 0.16,
+  dragPixelsForFull: 80,
+  afterImpactScale: 0.45,
+  afterImpactTime: 0.2,
   slowmoBoost: 2,
-  assistBelow: 14, // m/s along the track: below this, the hill gives him a shove
-  assistMax: 10, // m/s^2
-  fallSpeed: 7, // m/s across the shaft at full drag
-  fallAuthority: 1.5,
+  assistBelow: 16, // m/s along the track: below this, the hill gives him a shove
+  assistMax: 12, // m/s^2
+  fallSpeed: 9, // m/s across the shaft at full drag
+  fallAuthority: 1.6,
+};
+
+export const SLAM = {
+  cooldown: 1.1, // seconds between slams
+  burst: 26, // m/s added straight down (and a little forward)
+  forward: 6,
+  window: 0.45, // seconds after a slam in which hits count as SLAM hits
+  spin: 14, // rad/s of forward flip
 };
 
 export const LAUNCH = {
   cancelRadiusPx: 40, // report
   fullPowerScreenFraction: 0.36, // report: full power at 35-40% of screen height
-  minSpeed: 12,
-  maxSpeed: 27,
+  minSpeed: 16,
+  maxSpeed: 34,
   maxYaw: 24 * (Math.PI / 180), // aim left/right
-  elevation: 16 * (Math.PI / 180), // launch angle above horizontal
+  elevation: 14 * (Math.PI / 180), // launch angle above horizontal
   previewSeconds: 0.9,
 };
 
 export const DAMAGE = {
   ignoreBelow: 2.2, // m/s normal speed change: micro contacts
   bruiseAt: 7, // report: ReSkate bruise at 7 m/s
-  breakAt: 15, // report says 12 m/s; our falls are faster, so bones hold a little longer
-  hitCooldown: 0.12,
+  breakAt: 17, // our falls are fast, so bones hold a little longer than the report's 12
+  hitCooldown: 0.1,
   breakCooldown: 0.5, // report: 0.5 s per bone
-  refImpact: 16, // m/s that counts as impact strength 1.0
-  chainWindow: 1.0, // report: +0.1x per new bone within 1.0 s
+  refImpact: 18, // m/s that counts as impact strength 1.0
+  chainWindow: 0.9, // seconds of silence before the combo meter starts to drain
+  chainDecay: 0.7, // seconds for a full meter to drain
+  comboPerLink: 0.4,
+  comboCap: 6,
+  whaleBonus: 0.5, // each whale bonk adds +0.5x
+  slamDamage: 1.35, // impacts in the slam window hit harder
+  slamPoints: 1.6,
 };
 
 export const SHOW = {
   t1: 0.08, t2: 0.35, t3Break: true, // report tiers by impact strength
   hitstopScale: 0.02,
-  slowmoScale: 0.25, // report: 0.25x in play
-  slowmoEaseIn: 0.15,
-  slowmoHold: 0.9,
-  slowmoEaseOut: 0.3,
-  cinematicCooldown: 6.5, // report: 6-8 s
-  cinematicSecondsPerRun: 12, // report: max(2, run / 12 s)
-  traumaDecay: 0.9,
-  maxShakeOffset: 0.35,
-  maxShakeRoll: 0.06,
+  slowmoScale: 0.22,
+  slowmoEaseIn: 0.12,
+  slowmoHold: 0.75,
+  slowmoEaseOut: 0.28,
+  cinematicCooldown: 4.5,
+  cinematicSecondsPerRun: 8,
+  traumaDecay: 1.1,
+  maxShakeOffset: 0.45,
+  maxShakeRoll: 0.07,
 };

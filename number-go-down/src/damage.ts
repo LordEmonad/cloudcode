@@ -16,7 +16,15 @@ export interface ImpactEvent {
   broke: boolean;
   firstBreakOfBone: boolean;
   groin: boolean;
+  slam: boolean; // landed inside the SLAM window
   t: number;
+}
+
+export interface Trick {
+  id: string;
+  name: string;
+  sub: string;
+  points: number;
 }
 
 const _r = new THREE.Vector3();
@@ -30,17 +38,24 @@ export class DamageModel {
   maxImpact = 0;
   broken = new Set<PartId>();
   breakOrder: PartId[] = [];
+  tricks: Trick[] = [];
+  private tricksDone = new Set<string>();
   private stress = new Map<PartId, number>();
   private lastHit = new Map<PartId, number>();
   private lastBreak = new Map<PartId, number>();
   private recentBreaks: number[] = [];
-  combo = 1;
-  private comboExpires = 0;
+  private recentHits: number[] = [];
+  /** Combo chain: hits in quick succession push the multiplier up; silence drains it. */
+  chain = 0;
+  chainHeat = 0; // 0..1 meter shown in the HUD
+  private lastChainT = -10;
   leverage = 1;
   leverageUntil = 0;
   whales = 0;
   private lastWhale = -10;
   lastEventT = 0;
+  slamUntil = -1;
+  obstaclesHit = new Set<string>();
 
   reset(): void {
     this.total = 0;
@@ -48,21 +63,32 @@ export class DamageModel {
     this.maxImpact = 0;
     this.broken.clear();
     this.breakOrder = [];
+    this.tricks = [];
+    this.tricksDone.clear();
     this.stress.clear();
     this.lastHit.clear();
     this.lastBreak.clear();
     this.recentBreaks = [];
-    this.combo = 1;
-    this.comboExpires = 0;
+    this.recentHits = [];
+    this.chain = 0;
+    this.chainHeat = 0;
+    this.lastChainT = -10;
     this.leverage = 1;
     this.leverageUntil = 0;
     this.whales = 0;
     this.lastWhale = -10;
+    this.slamUntil = -1;
+    this.obstaclesHit.clear();
+  }
+
+  /** Combo multiplier from the chain: x1 at 0, +0.5 per link, capped. */
+  comboMult(): number {
+    return Math.min(DAMAGE.comboCap, 1 + this.chain * DAMAGE.comboPerLink);
   }
 
   multiplier(t: number): number {
     const lev = t < this.leverageUntil ? this.leverage : 1;
-    return (t < this.comboExpires ? this.combo : 1) * lev * (1 + this.whales);
+    return this.comboMult() * lev * (1 + this.whales * DAMAGE.whaleBonus);
   }
 
   setLeverage(mult: number, t: number, seconds = 4): void {
@@ -70,10 +96,35 @@ export class DamageModel {
     this.leverageUntil = t + seconds;
   }
 
+  /** Called every fixed step: the chain cools when nothing is hit. */
+  tick(t: number, dt: number): void {
+    const since = t - this.lastChainT;
+    if (since > DAMAGE.chainWindow) {
+      this.chainHeat = Math.max(0, this.chainHeat - dt / DAMAGE.chainDecay);
+      if (this.chainHeat <= 0 && this.chain > 0) this.chain = 0;
+    }
+  }
+
+  /** Bonus points from outside the contact model (gates, glass, tricks). */
+  addBonus(points: number): number {
+    const p = Math.round(points / 10) * 10;
+    this.total += p;
+    return p;
+  }
+
+  /** Award a named trick once per run. Returns it, or null if already done. */
+  trick(id: string, name: string, sub: string, points: number, t: number): Trick | null {
+    if (this.tricksDone.has(id)) return null;
+    this.tricksDone.add(id);
+    const p = this.addBonus(points * this.multiplier(t));
+    const tr = { id, name, sub, points: p };
+    this.tricks.push(tr);
+    return tr;
+  }
+
   /** Inspect this step's contacts; returns scored impact events. */
   detect(world: World, ragdoll: Ragdoll, course: Course, t: number): ImpactEvent[] {
     const events: ImpactEvent[] = [];
-    if (t > this.comboExpires) this.combo = 1;
     for (const part of ragdoll.parts) {
       part.contact = false;
       let best: { speed: number; obstacle: Obstacle; point: THREE.Vector3; normal: THREE.Vector3 } | null = null;
@@ -116,12 +167,13 @@ export class DamageModel {
     if (t - (this.lastHit.get(id) ?? -1) < DAMAGE.hitCooldown) return null;
     this.lastHit.set(id, t);
 
-    const eff = speed * obstacle.damageScale;
+    const slam = t < this.slamUntil;
+    const eff = speed * obstacle.damageScale * (slam ? DAMAGE.slamDamage : 1);
     const strength = eff / DAMAGE.refImpact;
     const groin = id === 'pelvis' && this.isGroin(part, point);
     const mult = this.multiplier(t);
     const f = Math.pow(Math.max(0, eff - 2) / 10, 1.5);
-    let points = part.spec.points * f * mult * (groin ? 3 : 1);
+    let points = part.spec.points * f * mult * (groin ? 3 : 1) * (slam ? DAMAGE.slamPoints : 1);
 
     // Bone stress: one huge hit or several medium ones break a bone.
     const fragility = part.spec.fragility;
@@ -146,21 +198,30 @@ export class DamageModel {
     }
 
     const tier: ImpactEvent['tier'] = broke ? 3 : strength >= 0.35 ? 2 : strength >= 0.08 ? 1 : 0;
-    if (tier >= 2) {
-      // Keep the chain alive; breaks grow it more than slams.
-      this.combo = (t < this.comboExpires ? this.combo : 1) + (broke ? 0.25 : 0.05);
-      this.comboExpires = t + DAMAGE.chainWindow + 0.2;
+    if (tier >= 1) {
+      // Every real hit feeds the chain; breaks feed it more.
+      this.chain += broke ? 2 : tier === 2 ? 1 : 0.5;
+      this.chainHeat = 1;
+      this.lastChainT = t;
+      this.recentHits.push(t);
+      this.recentHits = this.recentHits.filter((ht) => t - ht < 1);
     }
     if (obstacle.kind === 'whale' && t - this.lastWhale > 1.2) {
       this.whales++;
       this.lastWhale = t;
     }
+    if (obstacle.label) this.obstaclesHit.add(obstacle.label);
     points = Math.round(points / 10) * 10;
     this.total += points;
     this.hits++;
     this.maxImpact = Math.max(this.maxImpact, speed);
     this.lastEventT = t;
-    return { part, speed, strength, obstacle, point, normal, points, tier, broke, firstBreakOfBone, groin, t };
+    return { part, speed, strength, obstacle, point, normal, points, tier, broke, firstBreakOfBone, groin, slam, t };
+  }
+
+  /** How many real hits landed in the last second (for FULL SEND). */
+  hitsLastSecond(): number {
+    return this.recentHits.length;
   }
 
   private isGroin(part: Part, point: THREE.Vector3): boolean {
@@ -178,3 +239,20 @@ export const BONE_NAMES: Record<PartId, string> = {
   upperArmL: 'L HUMERUS', upperArmR: 'R HUMERUS', foreArmL: 'L FOREARM', foreArmR: 'R FOREARM',
   thighL: 'L FEMUR', thighR: 'R FEMUR', shinL: 'L TIBIA', shinR: 'R TIBIA',
 };
+
+/** Rank titles by final score. */
+export const RANKS: [number, string, string][] = [
+  [0, 'BARELY A DIP', 'buy the dip they said'],
+  [150_000, 'PAPER HANDS', 'folded on the first red candle'],
+  [400_000, 'DEGEN', 'leverage was a choice'],
+  [900_000, 'LIQUIDATED', 'margin call answered'],
+  [1_800_000, 'WHALE FOOD', 'eaten alive'],
+  [3_500_000, 'TOTALLY REKT', 'every bone, every candle'],
+  [7_000_000, 'REKT LEGEND', 'number went all the way down'],
+];
+
+export function rankFor(score: number): [string, string] {
+  let best = RANKS[0];
+  for (const r of RANKS) if (score >= r[0]) best = r;
+  return [best[1], best[2]];
+}

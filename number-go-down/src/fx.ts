@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import {
   EffectComposer, RenderPass, EffectPass, BloomEffect, ChromaticAberrationEffect, VignetteEffect,
-  NoiseEffect, ToneMappingEffect, ToneMappingMode, Effect, BlendFunction,
+  NoiseEffect, ToneMappingEffect, ToneMappingMode, Effect, BlendFunction, GodRaysEffect, KernelSize,
 } from 'postprocessing';
 import { softDotTexture, starTexture } from './textures';
 
@@ -73,6 +73,7 @@ class ParticleSystem {
       transparent: true,
       depthWrite: false,
       blending: kind.additive ? THREE.AdditiveBlending : THREE.NormalBlending,
+      toneMapped: false,
     });
     this.points = new THREE.Points(geo, mat);
     this.points.frustumCulled = false;
@@ -84,55 +85,45 @@ class ParticleSystem {
   }
 
   emit(p: THREE.Vector3, v: THREE.Vector3, color: THREE.Color, alpha: number, size: number, life: number, gravity = 0, drag = 1, spin = 0): void {
-    const n = this.life.length;
     const i = this.next;
-    this.next = (this.next + 1) % n;
+    this.next = (this.next + 1) % this.life.length;
     this.pos.set([p.x, p.y, p.z], i * 3);
     this.vel.set([v.x, v.y, v.z], i * 3);
     this.col.set([color.r, color.g, color.b, alpha], i * 4);
-    this.baseSize[i] = size;
     this.size[i] = size;
+    this.baseSize[i] = size;
     this.life[i] = life;
     this.maxLife[i] = life;
     this.gravity[i] = gravity;
     this.drag[i] = drag;
     this.spin[i] = spin;
     this.angle[i] = Math.random() * Math.PI * 2;
-    this.alive = Math.min(n, this.alive + 1);
+    this.alive = Math.min(this.life.length, this.alive + 1);
   }
 
-  update(dt: number, wrap?: { center: THREE.Vector3; half: THREE.Vector3 }): void {
+  update(dt: number): void {
     const n = this.life.length;
     for (let i = 0; i < n; i++) {
-      if (this.life[i] <= 0) { this.size[i] = 0; continue; }
+      if (this.life[i] <= 0) continue;
       this.life[i] -= dt;
-      const k = Math.exp(-this.drag[i] * dt);
-      this.vel[i * 3 + 1] += this.gravity[i] * dt;
-      this.vel[i * 3] *= k; this.vel[i * 3 + 1] *= k; this.vel[i * 3 + 2] *= k;
+      if (this.life[i] <= 0) { this.col[i * 4 + 3] = 0; this.size[i] = 0; continue; }
+      const d = Math.exp(-this.drag[i] * dt);
+      this.vel[i * 3] *= d;
+      this.vel[i * 3 + 1] = this.vel[i * 3 + 1] * d + this.gravity[i] * dt;
+      this.vel[i * 3 + 2] *= d;
       this.pos[i * 3] += this.vel[i * 3] * dt;
       this.pos[i * 3 + 1] += this.vel[i * 3 + 1] * dt;
       this.pos[i * 3 + 2] += this.vel[i * 3 + 2] * dt;
       this.angle[i] += this.spin[i] * dt;
-      if (wrap) {
-        // Ambient embers wrap around the camera so their cost stays constant.
-        for (let a = 0; a < 3; a++) {
-          const c = wrap.center.getComponent(a);
-          const h = wrap.half.getComponent(a);
-          let v = this.pos[i * 3 + a];
-          if (v < c - h) v += 2 * h; else if (v > c + h) v -= 2 * h;
-          this.pos[i * 3 + a] = v;
-        }
-        this.life[i] = this.maxLife[i];
-      }
-      const f = this.life[i] / this.maxLife[i];
-      this.size[i] = this.baseSize[i] * (wrap ? 1 : 0.4 + 0.6 * f);
-      this.col[i * 4 + 3] = wrap ? this.col[i * 4 + 3] : Math.min(1, f * 1.6);
+      const k = this.life[i] / this.maxLife[i];
+      this.col[i * 4 + 3] = Math.min(1, k * 2);
+      this.size[i] = this.baseSize[i] * (0.4 + 0.6 * k);
     }
     const g = this.points.geometry;
-    g.attributes.position.needsUpdate = true;
-    g.attributes.color.needsUpdate = true;
-    g.attributes.size.needsUpdate = true;
-    g.attributes.angle.needsUpdate = true;
+    (g.attributes.position as THREE.BufferAttribute).needsUpdate = true;
+    (g.attributes.color as THREE.BufferAttribute).needsUpdate = true;
+    (g.attributes.size as THREE.BufferAttribute).needsUpdate = true;
+    (g.attributes.angle as THREE.BufferAttribute).needsUpdate = true;
   }
 }
 
@@ -147,8 +138,8 @@ export class Particles {
   constructor(scene: THREE.Scene) {
     const dot = softDotTexture();
     const star = starTexture();
-    this.glow = new ParticleSystem({ texture: dot, additive: true, max: 700 });
-    this.solid = new ParticleSystem({ texture: dot, additive: false, max: 500 });
+    this.glow = new ParticleSystem({ texture: dot, additive: true, max: 900 });
+    this.solid = new ParticleSystem({ texture: dot, additive: false, max: 600 });
     this.stars = new ParticleSystem({ texture: star, additive: false, max: 120 });
     scene.add(this.solid.points, this.glow.points, this.stars.points);
   }
@@ -160,17 +151,27 @@ export class Particles {
 
   /** Sparks and dust for a hit; more and bigger for stronger hits. */
   impact(p: THREE.Vector3, n: THREE.Vector3, strength: number, color = 0xffcf3a): void {
-    const count = Math.round(4 + strength * 18);
+    const count = Math.round(6 + strength * 26);
     for (let i = 0; i < count; i++) {
-      _v.copy(n).multiplyScalar(2 + Math.random() * 6 * (0.5 + strength)).add(new THREE.Vector3((Math.random() - 0.5) * 7, (Math.random() - 0.5) * 7, (Math.random() - 0.5) * 3));
-      _c.set(color).lerp(new THREE.Color(0xffffff), Math.random() * 0.5);
-      this.glow.emit(p, _v, _c, 1, 0.04 + Math.random() * 0.04, 0.2 + Math.random() * 0.25, -14, 3);
+      _v.copy(n).multiplyScalar(3 + Math.random() * 8 * (0.5 + strength)).add(new THREE.Vector3((Math.random() - 0.5) * 9, (Math.random() - 0.5) * 9, (Math.random() - 0.5) * 4));
+      _c.set(color).lerp(new THREE.Color(0xffffff), Math.random() * 0.5).multiplyScalar(1.6);
+      this.glow.emit(p, _v, _c, 1, 0.04 + Math.random() * 0.05, 0.25 + Math.random() * 0.3, -16, 3, 0);
     }
-    const dust = Math.round(1 + strength * 3);
+    const dust = Math.round(2 + strength * 4);
     for (let i = 0; i < dust; i++) {
       _v.copy(n).multiplyScalar(0.8 + Math.random() * 1.5).add(new THREE.Vector3((Math.random() - 0.5) * 2, (Math.random() - 0.5) * 2, (Math.random() - 0.5) * 1));
       _c.set(0xd8c4e0);
-      this.solid.emit(p, _v, _c, 0.18, 0.16 + Math.random() * 0.16 * (1 + Math.min(strength, 1)), 0.3 + Math.random() * 0.25, 0, 2.5);
+      this.solid.emit(p, _v, _c, 0.22, 0.18 + Math.random() * 0.2 * (1 + Math.min(strength, 1)), 0.35 + Math.random() * 0.3, 0, 2.5);
+    }
+  }
+
+  /** A shockwave ring of sparks for slams and big hits. */
+  burst(p: THREE.Vector3, color: number, size = 1): void {
+    for (let i = 0; i < 36; i++) {
+      const a = (i / 36) * Math.PI * 2;
+      _v.set(Math.cos(a) * 9 * size, 1.5 + Math.random() * 2, Math.sin(a) * 9 * size);
+      _c.set(color).multiplyScalar(1.8);
+      this.glow.emit(p, _v, _c, 1, 0.09 * size, 0.35, -6, 4);
     }
   }
 
@@ -181,37 +182,55 @@ export class Particles {
       const a = (i / count) * Math.PI * 2;
       _v.set(Math.cos(a) * 3.5, Math.sin(a) * 3.5 + 1.5, 0.5);
       _c.set(i % 2 ? 0xffcf3a : 0xfff7f2);
-      this.stars.emit(p, _v, _c, 1, 0.13 + strength * 0.06, 0.5, -6, 3, (Math.random() - 0.5) * 12);
+      this.stars.emit(p, _v, _c, 1, 0.14 + strength * 0.06, 0.5, -6, 3, (Math.random() - 0.5) * 12);
     }
   }
 
   /** Bone chips for a break (white shards, no blood). */
   boneChips(p: THREE.Vector3, n: THREE.Vector3): void {
-    for (let i = 0; i < 12; i++) {
-      _v.copy(n).multiplyScalar(2 + Math.random() * 4).add(new THREE.Vector3((Math.random() - 0.5) * 6, Math.random() * 5, (Math.random() - 0.5) * 3));
+    for (let i = 0; i < 14; i++) {
+      _v.copy(n).multiplyScalar(2 + Math.random() * 5).add(new THREE.Vector3((Math.random() - 0.5) * 7, Math.random() * 6, (Math.random() - 0.5) * 3));
       _c.set(0xfff3e0);
-      this.solid.emit(p, _v, _c, 1, 0.07 + Math.random() * 0.06, 0.6 + Math.random() * 0.4, -18, 1.5, (Math.random() - 0.5) * 20);
+      this.solid.emit(p, _v, _c, 1, 0.07 + Math.random() * 0.06, 0.6 + Math.random() * 0.4, -20, 1.5, (Math.random() - 0.5) * 20);
     }
   }
 
   /** Glass shards when the SUPPORT floor breaks. */
   shatter(center: THREE.Vector3, width: number): void {
-    for (let i = 0; i < 90; i++) {
+    for (let i = 0; i < 110; i++) {
       const p = center.clone().add(new THREE.Vector3((Math.random() - 0.5) * width, (Math.random() - 0.5) * 0.3, (Math.random() - 0.5) * 2));
       _v.set((Math.random() - 0.5) * 8, -2 - Math.random() * 8, (Math.random() - 0.5) * 3);
-      _c.set(0x9fffe0);
+      _c.set(0x9fffe0).multiplyScalar(1.5);
       this.glow.emit(p, _v, _c, 0.9, 0.08 + Math.random() * 0.1, 0.8 + Math.random() * 0.6, -16, 0.5, (Math.random() - 0.5) * 16);
     }
   }
 
   /** A burst of gate/boost sparkles. */
   ring(center: THREE.Vector3, radius: number, color: number): void {
-    for (let i = 0; i < 40; i++) {
-      const a = (i / 40) * Math.PI * 2;
+    for (let i = 0; i < 48; i++) {
+      const a = (i / 48) * Math.PI * 2;
       const p = center.clone().add(new THREE.Vector3(Math.cos(a) * radius, Math.sin(a) * radius, 0));
-      _v.set(Math.cos(a) * 5, Math.sin(a) * 5, 0);
-      _c.set(color);
-      this.glow.emit(p, _v, _c, 1, 0.12, 0.5, 0, 2);
+      _v.set(Math.cos(a) * 6, Math.sin(a) * 6, 0);
+      _c.set(color).multiplyScalar(1.7);
+      this.glow.emit(p, _v, _c, 1, 0.13, 0.5, 0, 2);
+    }
+  }
+
+  /** Water thrown up by a whale or the spout. */
+  splash(p: THREE.Vector3, count = 40, up = 9): void {
+    for (let i = 0; i < count; i++) {
+      _v.set((Math.random() - 0.5) * 7, up * (0.5 + Math.random()), (Math.random() - 0.5) * 7);
+      _c.set(0x9fe8ff).lerp(new THREE.Color(0xffffff), Math.random() * 0.6);
+      this.solid.emit(p, _v, _c, 0.9, 0.08 + Math.random() * 0.1, 0.6 + Math.random() * 0.5, -18, 0.8);
+    }
+  }
+
+  /** Lava thrown by a geyser. */
+  magma(p: THREE.Vector3, count = 50): void {
+    for (let i = 0; i < count; i++) {
+      _v.set((Math.random() - 0.5) * 6, 10 + Math.random() * 14, (Math.random() - 0.5) * 6);
+      _c.set(Math.random() < 0.5 ? 0xff6a10 : 0xffd23a).multiplyScalar(1.8);
+      this.glow.emit(p, _v, _c, 1, 0.1 + Math.random() * 0.12, 0.8 + Math.random() * 0.6, -20, 0.6);
     }
   }
 
@@ -240,7 +259,7 @@ export class EmberField {
     uDensity: { value: 1 },
   };
 
-  constructor(scene: THREE.Scene, count = 2200) {
+  constructor(scene: THREE.Scene, count = 2600) {
     const seeds = new Float32Array(count * 4);
     for (let i = 0; i < seeds.length; i++) seeds[i] = Math.random();
     const geo = new THREE.BufferGeometry();
@@ -283,6 +302,7 @@ export class EmberField {
       depthWrite: false,
       blending: THREE.AdditiveBlending,
       fog: false,
+      toneMapped: false,
     });
     this.points = new THREE.Points(geo, mat);
     this.points.frustumCulled = false;
@@ -312,20 +332,34 @@ const gradeShader = /* glsl */ `
   uniform float flash;
   uniform float speed;
   uniform float seed;
+  uniform float heat;
+  uniform float pop;
+  float gh(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
+  float gn(vec2 p) { vec2 i = floor(p), f = fract(p); vec2 u = f * f * (3.0 - 2.0 * f);
+    return mix(mix(gh(i), gh(i + vec2(1, 0)), u.x), mix(gh(i + vec2(0, 1)), gh(i + vec2(1, 1)), u.x), u.y); }
+  void mainUv(inout vec2 uv) {
+    // Heat haze: the picture shimmers near the bottom of the frame, more when hell is excited.
+    float amt = heat * 0.0035 * (1.0 - smoothstep(0.1, 0.8, uv.y));
+    uv += vec2(gn(uv * 18.0 + vec2(0.0, seed * 2.5)) - 0.5, gn(uv * 18.0 + vec2(7.0, seed * 2.1)) - 0.5) * amt;
+  }
   void mainImage(const in vec4 inputColor, const in vec2 uv, out vec4 outputColor) {
     vec3 c = inputColor.rgb;
+    // Punch: a little contrast and saturation, blacks crushed toward ink purple.
     float l = dot(c, vec3(0.299, 0.587, 0.114));
+    c = mix(vec3(l), c, 1.0 + 0.18 * pop);
+    c = (c - 0.5) * (1.0 + 0.1 * pop) + 0.5;
+    c = max(c, vec3(0.012, 0.004, 0.02) * pop);
     c = mix(c, vec3(l), desat);
     c = mix(c, c * vec3(0.78, 0.93, 1.22) + vec3(0.0, 0.015, 0.05), cool);
-    // Speed lines toward the screen edges, stronger the faster he falls.
+    // Speed lines toward the screen edges, stronger the faster he goes.
     vec2 d = uv - 0.5;
     float ang = atan(d.y, d.x);
-    float lane = floor(ang * 38.0 / 3.14159);
-    float h = fract(sin(lane * 91.7 + floor(seed * 9.0) * 3.1) * 43758.5);
+    float lane = floor(ang * 44.0 / 3.14159);
+    float h = fract(sin(lane * 91.7 + floor(seed * 12.0) * 3.1) * 43758.5);
     float r = length(d * vec2(0.6, 1.0));
-    float line = step(0.82, h) * smoothstep(0.32, 0.62, r) * speed;
-    c += vec3(1.0, 0.92, 0.96) * line * 0.22;
-    c = mix(c, vec3(1.0, 0.97, 0.94), flash * 0.35);
+    float line = step(0.8, h) * smoothstep(0.3, 0.62, r) * speed;
+    c += vec3(1.0, 0.92, 0.96) * line * 0.28;
+    c = mix(c, vec3(1.0, 0.97, 0.94), flash * 0.4);
     // Dither so the dark red-purple gradients do not band in 8-bit buffers.
     float n = fract(sin(dot(uv * 1000.0 + seed, vec2(12.9898, 78.233))) * 43758.5453);
     c += (n - 0.5) / 255.0;
@@ -343,13 +377,15 @@ class GradeEffect extends Effect {
         ['flash', new THREE.Uniform(0)],
         ['speed', new THREE.Uniform(0)],
         ['seed', new THREE.Uniform(0)],
+        ['heat', new THREE.Uniform(0)],
+        ['pop', new THREE.Uniform(1)],
       ]),
     });
   }
 }
 
 export interface GradeParams {
-  desat: number; cool: number; grain: number; flash: number; chroma: number; vignette: number;
+  desat: number; cool: number; grain: number; flash: number; chroma: number; vignette: number; heat: number;
 }
 
 export class Post {
@@ -359,40 +395,50 @@ export class Post {
   private vignette: VignetteEffect;
   private noise: NoiseEffect;
   private bloom: BloomEffect | null = null;
+  private rays: GodRaysEffect | null = null;
   enabled = true;
 
-  constructor(private renderer: THREE.WebGLRenderer, private scene: THREE.Scene, private camera: THREE.Camera, quality: 'high' | 'low') {
+  constructor(private renderer: THREE.WebGLRenderer, private scene: THREE.Scene, private camera: THREE.Camera, quality: 'high' | 'low', moon?: THREE.Mesh) {
     this.composer = new EffectComposer(renderer, {
       multisampling: quality === 'high' ? Math.min(4, renderer.capabilities.maxSamples) : 0,
       frameBufferType: THREE.HalfFloatType,
     });
     this.composer.addPass(new RenderPass(scene, camera));
     this.chroma = new ChromaticAberrationEffect({ offset: new THREE.Vector2(0, 0), radialModulation: true, modulationOffset: 0.2 });
-    this.vignette = new VignetteEffect({ offset: 0.3, darkness: 0.35 });
+    this.vignette = new VignetteEffect({ offset: 0.3, darkness: 0.38 });
     this.noise = new NoiseEffect({ premultiply: true, blendFunction: BlendFunction.OVERLAY });
     this.noise.blendMode.opacity.value = 0;
     const effects: Effect[] = [];
     if (quality === 'high') {
-      // Bloom only catches emissive signs, gates and sparks (report: 4-5 levels, half resolution).
-      this.bloom = new BloomEffect({ mipmapBlur: true, intensity: 1.1, luminanceThreshold: 0.92, luminanceSmoothing: 0.12, levels: 5, radius: 0.7 });
+      if (moon) {
+        // Light shafts from the eclipse corona, broken up by the spires and candle towers.
+        this.rays = new GodRaysEffect(camera, moon, { resolutionScale: 0.5, density: 0.92, decay: 0.94, weight: 0.5, exposure: 0.55, samples: 48, clampMax: 1, kernelSize: KernelSize.SMALL, blur: true });
+        effects.push(this.rays);
+      }
+      // Bloom only catches emissive signs, gates, flames and sparks (report: 4-5 levels, half resolution).
+      this.bloom = new BloomEffect({ mipmapBlur: true, intensity: 1.25, luminanceThreshold: 0.88, luminanceSmoothing: 0.15, levels: 6, radius: 0.75 });
       effects.push(this.bloom);
     }
-    effects.push(this.chroma, this.grade, this.noise, this.vignette, new ToneMappingEffect({ mode: ToneMappingMode.NEUTRAL }));
-    this.composer.addPass(new EffectPass(camera, ...effects));
+    // The grade transforms UVs (heat haze), so it cannot share a pass with any convolution
+    // effect (god rays, bloom, chromatic aberration): it gets a pass of its own.
+    if (effects.length) this.composer.addPass(new EffectPass(camera, ...effects));
+    this.composer.addPass(new EffectPass(camera, this.grade));
+    this.composer.addPass(new EffectPass(camera, this.chroma, this.noise, this.vignette, new ToneMappingEffect({ mode: ToneMappingMode.NEUTRAL })));
   }
 
   setSize(w: number, h: number): void {
     this.composer.setSize(w, h);
   }
 
-  update(p: GradeParams, fallSpeed: number, t: number): void {
+  update(p: GradeParams, speed: number, t: number): void {
     const u = this.grade.uniforms;
     u.get('desat')!.value = p.desat;
     u.get('cool')!.value = p.cool;
     u.get('flash')!.value = p.flash;
-    u.get('speed')!.value = THREE.MathUtils.clamp((fallSpeed - 12) / 14, 0, 1);
+    u.get('speed')!.value = THREE.MathUtils.clamp((speed - 14) / 16, 0, 1);
     u.get('seed')!.value = t;
-    const o = 0.0035 * p.chroma;
+    u.get('heat')!.value = p.heat;
+    const o = 0.004 * p.chroma;
     this.chroma.offset.set(o, o * 0.6);
     this.vignette.darkness = p.vignette;
     this.noise.blendMode.opacity.value = p.grain * 0.35;

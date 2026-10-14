@@ -66,9 +66,12 @@ export class CameraRig {
   private aimPose(pouch: THREE.Vector3, pull: number, pos: THREE.Vector3, look: THREE.Vector3): void {
     // A crane shot from behind and above the slingshot: Emonad in the pouch,
     // the Gates of Hell, and the road winding down into the abyss beyond.
-    pos.set(pouch.x * 0.4, pouch.y + 5.2 + pull * 1.0, pouch.z + 7.6 + pull * 2.6);
-    look.set(pouch.x * 0.2, pouch.y - 9, pouch.z - 26);
+    pos.set(pouch.x * 0.4, pouch.y + 6.4 + pull * 1.0, pouch.z + 9.0 + pull * 2.6);
+    look.set(pouch.x * 0.2, pouch.y - 6, pouch.z - 26);
   }
+
+  /** Sideways steering input (-1..1) rolls the camera a little, like leaning into a turn. */
+  lean = 0;
 
   update(dt: number, target: THREE.Vector3, velocity: THREE.Vector3, mode: CamMode, frame: Frame | null, closeUp: THREE.Vector3, pull = 0, restCenter?: THREE.Vector3): void {
     this.t += dt;
@@ -98,16 +101,16 @@ export class CameraRig {
       if (vertical > 0.85 || up.lengthSq() < 0.05) up.copy(this.flatFwd).negate();
       up.normalize();
       const fast = THREE.MathUtils.clamp(speed / 26, 0, 1);
-      const desiredDist = THREE.MathUtils.lerp(4.8, 7.6, fast) + vertical * 5;
+      const desiredDist = THREE.MathUtils.lerp(4.6, 7.2, fast) + vertical * 5;
       this.dist += (desiredDist - this.dist) * (1 - Math.exp(-dt * 2));
-      this.height += (THREE.MathUtils.lerp(2.1, 1.4, vertical) - this.height) * (1 - Math.exp(-dt * 2));
+      this.height += (THREE.MathUtils.lerp(1.9, 1.4, vertical) - this.height) * (1 - Math.exp(-dt * 2));
       // Stay on the track's centreline sideways, but follow him most of the way.
       const lateral = target.clone().sub(frame.point).dot(frame.right);
       const anchor = frame.point.clone().addScaledVector(frame.right, lateral * 0.75);
       anchor.addScaledVector(UP, target.clone().sub(frame.point).dot(UP) * (1 - vertical));
       if (vertical > 0.5) anchor.copy(target);
       desiredPos.copy(anchor).addScaledVector(f, -this.dist).addScaledVector(up, this.height);
-      desiredLook.copy(target).addScaledVector(f, THREE.MathUtils.lerp(4, 10, fast)).addScaledVector(up, -0.8);
+      desiredLook.copy(target).addScaledVector(f, THREE.MathUtils.lerp(3.5, 9, fast)).addScaledVector(up, -0.6);
       followRate = 6 + Math.min(speed, 30) * 0.25;
     } else {
       desiredPos.copy(target).add(new THREE.Vector3(0, 4, 8));
@@ -141,7 +144,7 @@ export class CameraRig {
     const shake = this.trauma * this.trauma * this.shakeScale * (1 - c * 0.5);
     const ox = noise(this.t * 18, 1.3) * SHOW.maxShakeOffset * shake;
     const oy = noise(this.t * 18, 7.1) * SHOW.maxShakeOffset * shake;
-    const roll = noise(this.t * 14, 3.7) * SHOW.maxShakeRoll * shake;
+    const roll = noise(this.t * 14, 3.7) * SHOW.maxShakeRoll * shake + this.lean * -0.06;
 
     this.camera.position.copy(camPos).add(this.kick).add(new THREE.Vector3(ox, oy, 0));
     this.camera.up.copy(UP);
@@ -151,7 +154,7 @@ export class CameraRig {
     this.camera.rotateZ(roll);
 
     this.fovKick = Math.max(0, this.fovKick - dt * 12);
-    const fov = this.baseFov * (1 - 0.18 * c) + this.fovKick + THREE.MathUtils.clamp(speed - 18, 0, 12) * 0.35;
+    const fov = this.baseFov * (1 - 0.18 * c) + this.fovKick + THREE.MathUtils.clamp(speed - 16, 0, 20) * 0.45;
     if (Math.abs(fov - this.camera.fov) > 0.01) {
       this.camera.fov = fov;
       this.camera.updateProjectionMatrix();

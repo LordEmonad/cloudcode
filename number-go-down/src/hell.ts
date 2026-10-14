@@ -2,9 +2,11 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { signTexture } from './textures';
 import { neon } from './materials';
+import { MATS, surf } from './look';
+import type { Flames } from './props';
 
-// Hell's set dressing: lava, sky, jagged canyon rock, neon trims and the
-// scenery that sells the scale of the descent. Everything is procedural.
+// Hell's set dressing: lava, the sky, the blood moon and the scenery that
+// sells the scale of the descent. Everything is procedural.
 
 const LAVA_GLSL = /* glsl */ `
   vec2 h2(vec2 p) { p = vec2(dot(p, vec2(127.1, 311.7)), dot(p, vec2(269.5, 183.3))); return fract(sin(p) * 43758.5453); }
@@ -93,7 +95,52 @@ export function tickLava(time: number, fog?: THREE.FogExp2): void {
   if (channelMat) channelMat.uniforms.time.value = time;
 }
 
+// ------------------------------------------------------------------ liquidity
+
+let liqMat: THREE.ShaderMaterial | null = null;
+
+/** Whale Waters: a glossy pool of liquidity. Caustic ripples, a sky reflection, sees through to the road. */
+export function liquidityMaterial(): THREE.ShaderMaterial {
+  if (liqMat) return liqMat;
+  liqMat = new THREE.ShaderMaterial({
+    uniforms: { time: { value: 0 } },
+    vertexShader: `varying vec3 vWorld; varying vec3 vNormalW; varying vec3 vView;
+      void main() { vec4 w = modelMatrix * vec4(position, 1.0); vWorld = w.xyz; vNormalW = normalize(mat3(modelMatrix) * normal); vView = cameraPosition - w.xyz; gl_Position = projectionMatrix * viewMatrix * w; }`,
+    fragmentShader: `uniform float time; varying vec3 vWorld; varying vec3 vNormalW; varying vec3 vView;
+      float h(vec2 p) { return fract(sin(dot(p, vec2(41.3, 289.1))) * 43758.5453); }
+      float n(vec2 p) { vec2 i = floor(p), f = fract(p); vec2 u = f * f * (3.0 - 2.0 * f);
+        return mix(mix(h(i), h(i + vec2(1, 0)), u.x), mix(h(i + vec2(0, 1)), h(i + vec2(1, 1)), u.x), u.y); }
+      void main() {
+        vec2 p = vWorld.xz * 0.5;
+        float t = time;
+        // Two layers of drifting ripples; their crossing makes caustic lines.
+        float a = n(p * 1.3 + vec2(t * 0.25, t * 0.1));
+        float b = n(p * 1.9 - vec2(t * 0.15, t * 0.3) + 5.0);
+        float caustic = pow(1.0 - abs(a - b), 9.0);
+        vec3 V = normalize(vView);
+        float fres = pow(1.0 - max(0.0, dot(normalize(vNormalW), V)), 3.0);
+        vec3 deep = vec3(0.02, 0.05, 0.22);
+        vec3 sky = vec3(0.35, 0.12, 0.55);
+        vec3 c = mix(deep, sky, fres * 0.7) + vec3(0.35, 0.9, 1.3) * caustic * 0.9;
+        // A soft glow where the neon rims would reflect.
+        c += vec3(0.1, 0.5, 0.9) * fres * 0.4;
+        float alpha = 0.55 + fres * 0.35;
+        gl_FragColor = vec4(c, alpha);
+      }`,
+    transparent: true,
+    depthWrite: false,
+    toneMapped: false,
+  });
+  return liqMat;
+}
+
+export function tickLiquidity(time: number): void {
+  if (liqMat) liqMat.uniforms.time.value = time;
+}
+
 // ------------------------------------------------------------------ sky
+
+export const SUN_DIR = new THREE.Vector3(0.15, 0.2, -1).normalize();
 
 export function createSky(): THREE.Mesh<THREE.SphereGeometry, THREE.ShaderMaterial> {
   const mat = new THREE.ShaderMaterial({
@@ -103,30 +150,39 @@ export function createSky(): THREE.Mesh<THREE.SphereGeometry, THREE.ShaderMateri
       below: { value: new THREE.Color(0x1a0204) },
       time: { value: 0 },
       hell: { value: 0 },
-      sunDir: { value: new THREE.Vector3(0.15, 0.2, -1).normalize() },
+      flash: { value: 0 },
+      sunDir: { value: SUN_DIR.clone() },
     },
     vertexShader: `varying vec3 vDir; void main() { vDir = normalize(position); gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
-    fragmentShader: `uniform vec3 top; uniform vec3 horizon; uniform vec3 below; uniform float time; uniform float hell; uniform vec3 sunDir; varying vec3 vDir;
+    fragmentShader: `uniform vec3 top; uniform vec3 horizon; uniform vec3 below; uniform float time; uniform float hell; uniform float flash; uniform vec3 sunDir; varying vec3 vDir;
       float h(vec2 p) { return fract(sin(dot(p, vec2(41.3, 289.1))) * 43758.5453); }
       float n(vec2 p) { vec2 i = floor(p), f = fract(p); vec2 u = f * f * (3.0 - 2.0 * f);
         return mix(mix(h(i), h(i + vec2(1, 0)), u.x), mix(h(i + vec2(0, 1)), h(i + vec2(1, 1)), u.x), u.y); }
-      float fbm(vec2 p) { float a = 0.5, s = 0.0; for (int i = 0; i < 4; i++) { s += a * n(p); p *= 2.07; a *= 0.5; } return s; }
+      float fbm(vec2 p) { float a = 0.5, s = 0.0; for (int i = 0; i < 5; i++) { s += a * n(p); p = p * 2.07 + 1.7; a *= 0.5; } return s; }
       void main() {
         vec3 d = normalize(vDir);
         float y = d.y;
         vec3 c = y > 0.0 ? mix(horizon, top, pow(smoothstep(0.0, 0.8, y), 0.65)) : mix(horizon, below, smoothstep(0.0, -0.3, y));
-        c += horizon * 0.45 * exp(-abs(y) * 12.0);
-        // Smoke clouds drifting across hell's sky (bands that thicken near the horizon).
-        vec2 uv = d.xz / (abs(y) + 0.25) * 1.6 + vec2(time * 0.02, time * 0.01);
-        float cl = fbm(uv) * smoothstep(-0.05, 0.25, y) * (1.0 - smoothstep(0.5, 0.95, y));
-        vec3 smoke = mix(vec3(0.02, 0.0, 0.01), horizon * 0.55, fbm(uv * 1.7 + 3.0));
-        c = mix(c, smoke, smoothstep(0.42, 0.75, cl) * 0.85 * hell);
+        c += horizon * 0.5 * exp(-abs(y) * 12.0);
+        // Two layers of smoke rolling across hell's sky at different speeds (parallax).
+        vec2 uv = d.xz / (abs(y) + 0.22);
+        float cl1 = fbm(uv * 1.4 + vec2(time * 0.018, time * 0.008));
+        float cl2 = fbm(uv * 2.6 + vec2(-time * 0.03, time * 0.012) + 9.0);
+        float band = smoothstep(-0.05, 0.3, y) * (1.0 - smoothstep(0.45, 0.95, y));
+        float smokeAmt = smoothstep(0.38, 0.72, cl1 * 0.65 + cl2 * 0.35) * band;
+        vec3 smokeCol = mix(vec3(0.02, 0.0, 0.01), horizon * 0.5, cl2);
+        // Smoke edges catch the lava light from below.
+        smokeCol += horizon * 0.35 * pow(1.0 - smokeAmt, 2.0) * smokeAmt;
+        c = mix(c, smokeCol, smokeAmt * 0.9 * hell);
         // The blood moon in eclipse: a black disc with a burning corona.
         float a = acos(clamp(dot(d, sunDir), -1.0, 1.0));
-        float disc = 1.0 - smoothstep(0.075, 0.08, a);
-        float corona = exp(-(a - 0.078) * 26.0) * step(0.078, a);
-        vec3 moon = vec3(2.6, 0.5, 0.25) * corona * (0.85 + 0.15 * sin(time * 2.0 + a * 120.0));
+        float disc = 1.0 - smoothstep(0.085, 0.09, a);
+        float corona = exp(-(a - 0.088) * 22.0) * step(0.088, a);
+        float rays = 0.6 + 0.4 * sin(atan(d.y - sunDir.y, d.x - sunDir.x) * 9.0 + time * 0.7);
+        vec3 moon = vec3(2.8, 0.55, 0.25) * corona * (0.75 + 0.25 * rays);
         c = mix(c + moon * hell, vec3(0.01, 0.0, 0.0), disc * hell);
+        // Lightning: the whole sky blinks white-violet, strongest near the horizon.
+        c += vec3(0.9, 0.7, 1.2) * flash * (0.35 + 0.65 * exp(-abs(y) * 4.0));
         gl_FragColor = vec4(c, 1.0);
       }`,
     side: THREE.BackSide,
@@ -138,6 +194,19 @@ export function createSky(): THREE.Mesh<THREE.SphereGeometry, THREE.ShaderMateri
   sky.renderOrder = -10;
   sky.frustumCulled = false;
   return sky;
+}
+
+/**
+ * The eclipse corona as a real mesh, for the god-rays pass: a bright ring far
+ * away along the sun direction. It follows the camera like the sky does.
+ */
+export function createMoon(): THREE.Mesh {
+  const g = new THREE.Group();
+  void g;
+  const ring = new THREE.Mesh(new THREE.RingGeometry(66, 78, 48), new THREE.MeshBasicMaterial({ color: new THREE.Color(0xff5a2a).multiplyScalar(1.6), toneMapped: false, fog: false, depthWrite: false, side: THREE.DoubleSide }));
+  ring.renderOrder = -9;
+  ring.frustumCulled = false;
+  return ring;
 }
 
 // ------------------------------------------------------------------ rock
@@ -159,35 +228,6 @@ function smooth3(x: number, y: number, z: number): number {
   );
 }
 
-/**
- * A slab of jagged rock: a box whose inner face bulges and whose top edge is
- * broken into crags. Displacement is in world space so neighbouring slabs match.
- */
-export function rockSlab(width: number, height: number, length: number, transform: THREE.Matrix4, seed: number): THREE.BufferGeometry {
-  const segY = Math.max(4, Math.round(height / 1.4));
-  const segZ = Math.max(4, Math.round(length / 1.6));
-  const geo = new THREE.BoxGeometry(width, height, length, 2, segY, segZ);
-  const pos = geo.attributes.position;
-  const uv = geo.attributes.uv;
-  const p = new THREE.Vector3();
-  const w = new THREE.Vector3();
-  for (let i = 0; i < pos.count; i++) {
-    p.fromBufferAttribute(pos, i);
-    w.copy(p).applyMatrix4(transform);
-    const top = (p.y + height / 2) / height; // 0 at the bottom, 1 at the top
-    const n1 = smooth3(w.x * 0.18 + seed, w.y * 0.18, w.z * 0.18);
-    const n2 = smooth3(w.x * 0.55, w.y * 0.55 + seed, w.z * 0.55);
-    // Bulge outward/inward along local x and break up the top edge.
-    p.x += (n1 - 0.5) * 1.6 + (n2 - 0.5) * 0.5;
-    if (top > 0.98) p.y += (smooth3(w.z * 0.35 + seed, 0, w.x * 0.35) - 0.35) * height * 0.45;
-    pos.setXYZ(i, p.x, p.y, p.z);
-    // World-space UVs so the rock texture keeps one scale on every slab.
-    uv.setXY(i, (w.x + w.z) / 7, w.y / 7);
-  }
-  geo.computeVertexNormals();
-  return geo;
-}
-
 // ------------------------------------------------------------------ scenery
 
 export interface SceneryOptions {
@@ -198,17 +238,16 @@ export interface SceneryOptions {
   holeRadius: number;
   /** Fraction of the path where The Fall begins (no billboards past it). */
   fallStart: number;
+  flames: Flames;
 }
 
 const _flameScale = new THREE.Vector3();
 
-/** Distant spires, burning candle towers, tumbling coins and joke billboards. */
+/** Distant spires, burning candle towers, tumbling coins, joke billboards, and the crash chart. */
 export class Scenery {
   group = new THREE.Group();
   private coins: THREE.InstancedMesh;
   private coinData: { p: THREE.Vector3; spin: THREE.Vector3; rot: THREE.Euler; fall: number }[] = [];
-  private flameMesh!: THREE.InstancedMesh;
-  private flameData: { p: THREE.Vector3; s: number }[] = [];
   private seaY = -300;
 
   constructor(scene: THREE.Scene, opts: SceneryOptions) {
@@ -221,7 +260,6 @@ export class Scenery {
       const i = Math.min(path.length - 2, Math.floor(f));
       return path[i].clone().lerp(path[i + 1], f - i);
     };
-
     // Keep set dressing out of the way of the course (and its camera).
     const clear = (x: number, z: number, r: number) => path.every((q) => (q.x - x) ** 2 + (q.z - z) ** 2 > r * r);
 
@@ -233,18 +271,18 @@ export class Scenery {
     this.group.add(sea);
     this.seaY = seaY;
 
-    // Rock spires: black silhouettes rising out of the lava, lit from below.
+    // Rock spires: black silhouettes rising out of the lava, lit from below. One draw call.
     const spireMat = new THREE.MeshBasicMaterial({ vertexColors: true });
     const spireGeos: THREE.BufferGeometry[] = [];
     const hotBase = new THREE.Color(0xff4a12);
     const cold = new THREE.Color(0x120608);
-    for (let k = 0; k < 46; k++) {
+    for (let k = 0; k < 52; k++) {
       const t = rand() * opts.fallStart;
       const c = along(t);
       const side = k % 2 ? 1 : -1;
-      const dist = 30 + rand() * 150;
-      const h = 60 + rand() * 260;
-      const r = 4 + rand() * 14;
+      const dist = 30 + rand() * 160;
+      const h = 60 + rand() * 280;
+      const r = 4 + rand() * 15;
       const geo = new THREE.ConeGeometry(r, h, 7, 8);
       const pos = geo.attributes.position;
       const cols = new Float32Array(pos.count * 3);
@@ -266,33 +304,34 @@ export class Scenery {
       geo.translate(x, seaY + h / 2 - 10, z);
       spireGeos.push(geo);
     }
-    // One draw call for the whole skyline.
     if (spireGeos.length) this.group.add(new THREE.Mesh(mergeGeometries(spireGeos), spireMat));
 
-    // Burning candle towers: giant red candles with fire on their wicks (two draw calls in all).
-    const candleMat = new THREE.MeshToonMaterial({ color: 0x9c0a22, emissive: 0x3a0008 });
+    // Burning candle towers: giant red candles with wax rivers down their sides and fire on their wicks.
+    const candleMat = MATS.wax(0x9c0a22, 0x2a0006);
     const towerGeos: THREE.BufferGeometry[] = [];
-    const flameAt: { p: THREE.Vector3; s: number }[] = [];
-    for (let k = 0; k < 14; k++) {
-      const c = along(0.05 + (k / 14) * opts.fallStart);
+    for (let k = 0; k < 16; k++) {
+      const c = along(0.05 + (k / 16) * opts.fallStart);
       const side = k % 2 ? 1 : -1;
-      const w = 6 + rand() * 6;
-      const h = 90 + rand() * 160;
-      const pos = new THREE.Vector3(c.x + side * (40 + rand() * 50), Math.max(seaY + h / 2 - 20, c.y - 120 + rand() * 60), c.z - 10 + rand() * 20);
+      const w = 6 + rand() * 7;
+      const h = 90 + rand() * 170;
+      const pos = new THREE.Vector3(c.x + side * (38 + rand() * 50), Math.max(seaY + h / 2 - 20, c.y - 120 + rand() * 60), c.z - 10 + rand() * 20);
       if (!clear(pos.x, pos.z, w + 18)) continue;
       const body = new THREE.BoxGeometry(w, h, w);
       body.translate(pos.x, pos.y, pos.z);
       towerGeos.push(body);
-      const wick = new THREE.BoxGeometry(1, h * 0.12, 1);
-      wick.translate(pos.x, pos.y + h / 2 + h * 0.06, pos.z);
+      for (let d = 0; d < 3; d++) {
+        const len = h * (0.2 + rand() * 0.4);
+        const drip = new THREE.CapsuleGeometry(w * 0.08, len, 3, 8);
+        const a = rand() * Math.PI * 2;
+        drip.translate(pos.x + Math.cos(a) * w * 0.52, pos.y + h / 2 - len / 2, pos.z + Math.sin(a) * w * 0.52);
+        towerGeos.push(drip);
+      }
+      const wick = new THREE.BoxGeometry(1, h * 0.1, 1);
+      wick.translate(pos.x, pos.y + h / 2 + h * 0.05, pos.z);
       towerGeos.push(wick);
-      flameAt.push({ p: new THREE.Vector3(pos.x, pos.y + h / 2 + h * 0.12 + w * 0.5, pos.z), s: w });
+      opts.flames.add(new THREE.Vector3(pos.x, pos.y + h / 2 + h * 0.1, pos.z), w * 0.9);
     }
     if (towerGeos.length) this.group.add(new THREE.Mesh(mergeGeometries(towerGeos), candleMat));
-    const flameGeo = new THREE.ConeGeometry(0.35, 1.4, 10);
-    this.flameMesh = new THREE.InstancedMesh(flameGeo, new THREE.MeshBasicMaterial({ color: new THREE.Color(0xff7a20).multiplyScalar(2.4), toneMapped: false, fog: false }), Math.max(1, flameAt.length));
-    this.flameData = flameAt;
-    this.group.add(this.flameMesh);
 
     // The crash chart: a colossal neon price line plunging across hell's sky.
     const end = path[path.length - 1];
@@ -316,9 +355,8 @@ export class Scenery {
 
     // Golden coins tumbling down through hell's sky.
     const coinGeo = new THREE.CylinderGeometry(1.2, 1.2, 0.22, 24);
-    const coinMat = new THREE.MeshToonMaterial({ color: 0xffcf3a, emissive: 0x4a2a00 });
-    this.coins = new THREE.InstancedMesh(coinGeo, coinMat, 40);
-    for (let k = 0; k < 40; k++) {
+    this.coins = new THREE.InstancedMesh(coinGeo, MATS.gold(), 48);
+    for (let k = 0; k < 48; k++) {
       const c = along(rand());
       const side = rand() < 0.5 ? -1 : 1;
       this.coinData.push({
@@ -330,7 +368,7 @@ export class Scenery {
     }
     this.group.add(this.coins);
 
-    // Neon billboards bolted onto the canyon tops: hell's ad space.
+    // Neon billboards on long poles out of the abyss: hell's ad space.
     const jokes: [string, string][] = [
       ['WAGMI', '#39f0b0'], ['NGMI', '#ff2a4d'], ['HODL', '#ffcf3a'], ['FUD', '#a259ff'], ['THIS IS FINE', '#ff8a3a'],
       ['BUY THE DIP', '#ff2a4d'], ['-99.9%', '#ff2a4d'], ['FEW', '#39f0b0'], ['GM', '#ff4fd8'], ['REKT', '#ff2a4d'],
@@ -346,19 +384,20 @@ export class Scenery {
       const side = k % 2 ? 1 : -1;
       const tex = signTexture(text, { color, glow: color, stroke: '#0b0410', width: 512, height: 160, background: 'rgba(11,4,16,0.75)', border: color });
       const board = new THREE.Mesh(new THREE.PlaneGeometry(7, 2.2), neon(tex, 1.7));
-      board.position.copy(c).addScaledVector(r, side * 9.5).add(new THREE.Vector3(0, 11, 0));
+      board.position.copy(c).addScaledVector(r, side * 10).add(new THREE.Vector3(0, 11, 0));
       // Face back up the track, toward the camera chasing Emonad.
       board.lookAt(board.position.clone().sub(f).addScaledVector(r, -side * 0.6));
       this.group.add(board);
-      // Long poles rising out of the abyss, merged into one draw call below.
       const pole = new THREE.BoxGeometry(0.35, 44, 0.35);
       pole.translate(board.position.x, board.position.y - 23, board.position.z);
       poles.push(pole);
     });
-    this.group.add(new THREE.Mesh(mergeGeometries(poles), new THREE.MeshBasicMaterial({ color: 0x14080e })));
+    this.group.add(new THREE.Mesh(mergeGeometries(poles), surf({ color: 0x14080e, roughness: 0.7, metalness: 0.6, rim: 0.4 })));
+    void _flameScale;
   }
 
   update(time: number, dt: number): void {
+    void time;
     const m = new THREE.Matrix4();
     const q = new THREE.Quaternion();
     this.coinData.forEach((c, k) => {
@@ -369,11 +408,5 @@ export class Scenery {
       this.coins.setMatrixAt(k, m);
     });
     this.coins.instanceMatrix.needsUpdate = true;
-    this.flameData.forEach((f, k) => {
-      const s = 1 + Math.sin(time * 9 + k * 1.7) * 0.12 + Math.sin(time * 23 + k) * 0.05;
-      m.compose(f.p, q.identity(), _flameScale.set(f.s / Math.sqrt(s), f.s * s, f.s / Math.sqrt(s)));
-      this.flameMesh.setMatrixAt(k, m);
-    });
-    this.flameMesh.instanceMatrix.needsUpdate = true;
   }
 }

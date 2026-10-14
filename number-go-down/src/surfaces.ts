@@ -1,8 +1,8 @@
 import * as THREE from 'three';
-import { toonRamp } from './materials';
+import { addRim } from './look';
 
-// Procedural surface shading for the track, injected into MeshToonMaterial so
-// it keeps toon lighting, fog and shadows. Every road vertex carries aTrack:
+// Procedural surface shading for the track, injected into MeshStandardMaterial
+// so it keeps PBR lighting, reflections, fog and shadows. Every road vertex carries aTrack:
 // x = metres across from the centre, y = metres along the track, z = part
 // (0 road, 1 bank, 2 lip, 3 underside).
 
@@ -40,8 +40,8 @@ export function tickSurfaces(time: number): void {
   timeUniform.value = time;
 }
 
-export function trackMaterial(style: SurfaceStyle): THREE.MeshToonMaterial {
-  const mat = new THREE.MeshToonMaterial({ color: 0xffffff, gradientMap: toonRamp() });
+export function trackMaterial(style: SurfaceStyle): THREE.MeshStandardMaterial {
+  const mat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.5, metalness: 0.08, envMapIntensity: 0.55 });
   const uniforms = {
     uBase: { value: new THREE.Color(style.base) },
     uBankA: { value: new THREE.Color(style.bankA) },
@@ -64,43 +64,48 @@ export function trackMaterial(style: SurfaceStyle): THREE.MeshToonMaterial {
         uniform vec3 uBase; uniform vec3 uBankA; uniform vec3 uBankB; uniform vec3 uNeon;
         uniform float uCrack; uniform float uHalfWidth; uniform float uChevrons; uniform float uTime;
         ${NOISE}`)
-      .replace('#include <color_fragment>', `#include <color_fragment>
+      .replace('#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>
         vec3 trackGlow = vec3(0.0);
         {
           float u = vTrack.x, v = vTrack.y, part = vTrack.z;
           float px = fwidth(u) + fwidth(v);
           if (part < 0.5) {
-            // Road: dark obsidian, a faint chart grid, neon edge lines, chevrons pointing down.
+            // Road: black obsidian with a faint chart grid, neon edge lines and chevrons pointing down.
             float n = tNoise(vec2(u, v) * 0.35) * 0.6 + tNoise(vec2(u, v) * 1.7) * 0.4;
-            vec3 c = uBase * (0.75 + 0.5 * n);
+            vec3 c = uBase * (0.7 + 0.6 * n);
             vec2 g = abs(fract(vec2(u * 0.5, v * 0.25)) - 0.5);
-            float grid = 1.0 - smoothstep(0.0, 0.02 + px * 0.5, min(g.x, g.y) - 0.0);
-            c = mix(c, c * 1.9 + uNeon * 0.08, grid * 0.35);
+            float grid = 1.0 - smoothstep(0.0, 0.02 + px * 0.5, min(g.x, g.y));
+            c = mix(c, c * 1.6 + uNeon * 0.06, grid * 0.3);
             float edge = abs(abs(u) - (uHalfWidth - 0.35));
-            float line = 1.0 - smoothstep(0.05, 0.08 + px, edge);
-            trackGlow += uNeon * line * 2.2;
+            float line = 1.0 - smoothstep(0.05, 0.09 + px, edge);
+            trackGlow += uNeon * line * 2.4;
             float chev = fract((v + abs(u) * 0.7) / 9.0);
             float arrow = (1.0 - smoothstep(0.0, 0.025 + px * 0.1, abs(chev - 0.5) - 0.02)) * step(abs(u), 2.6) * uChevrons;
-            trackGlow += uNeon * arrow * 0.55;
-            c = mix(c, uNeon * 0.25, arrow * 0.5);
+            trackGlow += uNeon * arrow * 0.7;
+            c = mix(c, uNeon * 0.3, arrow * 0.5);
             if (uCrack > 0.0) {
               float k = tCrack(vec2(u * 0.8, v * 0.32));
               float hot = (1.0 - smoothstep(0.0, 0.025 + px * 0.12, k)) * smoothstep(0.5, 0.85, tNoise(vec2(u, v) * 0.09 + 3.0));
               float pulse = 0.8 + 0.2 * sin(uTime * 2.2 + v * 0.15);
-              trackGlow += vec3(2.4, 0.55, 0.08) * hot * uCrack * pulse;
+              trackGlow += vec3(2.6, 0.6, 0.08) * hot * uCrack * pulse;
               c = mix(c, vec3(0.05, 0.0, 0.0), hot * uCrack * 0.6);
             }
             diffuseColor.rgb = c;
+            roughnessFactor = 0.45 + 0.35 * n;
           } else if (part < 1.5) {
-            // Banks: the emo checkerboard, darkening toward the road.
-            vec2 q = floor(vec2(u * 0.8, v * 0.8));
-            float chk = mod(q.x + q.y, 2.0);
-            vec3 c = mix(uBankA, uBankB, chk);
-            diffuseColor.rgb = c * (0.55 + 0.45 * smoothstep(uHalfWidth, uHalfWidth + 2.0, abs(u)));
+            // Banks: carved hell rock, with a glowing seam where they meet the road.
+            float n = tNoise(vec2(u * 0.9, v * 0.45)) * 0.6 + tNoise(vec2(u * 2.7, v * 1.3)) * 0.4;
+            float k = tCrack(vec2(u * 0.7 + 3.0, v * 0.25));
+            float vein = 1.0 - smoothstep(0.0, 0.05 + px * 0.2, k);
+            vec3 c = mix(uBankA, uBankB, n * 0.6) * (0.6 + 0.6 * n);
+            float seam = 1.0 - smoothstep(0.0, 0.9, abs(u) - uHalfWidth);
+            trackGlow += uNeon * vein * 0.35 * (0.4 + 0.6 * seam) + uNeon * seam * 0.25;
+            diffuseColor.rgb = c;
+            roughnessFactor = 0.85;
           } else if (part < 2.5) {
             // The lip: a bright neon tube along the top of each bank.
             diffuseColor.rgb = uNeon * 0.4;
-            trackGlow += uNeon * 2.6;
+            trackGlow += uNeon * 2.8;
           } else {
             // Underside: rock lit from below by the lava.
             float n = tNoise(vec2(u, v) * 0.4);
@@ -109,11 +114,13 @@ export function trackMaterial(style: SurfaceStyle): THREE.MeshToonMaterial {
             float vein = 1.0 - smoothstep(0.0, 0.05 + px * 0.2, k);
             trackGlow += vec3(1.8, 0.35, 0.05) * vein * 0.7;
             diffuseColor.rgb = c;
+            roughnessFactor = 0.9;
           }
         }`)
       .replace('#include <opaque_fragment>', 'outgoingLight += trackGlow;\n#include <opaque_fragment>');
   };
-  mat.customProgramCacheKey = () => 'track-surface';
+  mat.userData.cacheKey = 'track-surface';
+  addRim(mat, 0.8, 2.4);
   return mat;
 }
 

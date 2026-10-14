@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { surf } from './look';
 
 // Comic-punk toon look (report: two- to three-band ramp, hot-pink rim on Emonad,
 // inverted-hull outline on Emonad only).
@@ -28,43 +29,28 @@ export interface ToonOptions {
   transparent?: boolean;
   opacity?: number;
   side?: THREE.Side;
+  roughness?: number;
+  metalness?: number;
 }
 
-/** Toon material with an optional fresnel rim light injected into the shader. */
-export function toon(color: THREE.ColorRepresentation, opts: ToonOptions = {}): THREE.MeshToonMaterial {
-  const mat = new THREE.MeshToonMaterial({
+/**
+ * Compatibility shim: the old toon factory now returns the stylised PBR
+ * surface from look.ts (the rim colour is global, so `rim` only enables it).
+ */
+export function toon(color: THREE.ColorRepresentation, opts: ToonOptions = {}): THREE.MeshStandardMaterial {
+  return surf({
     color,
     map: opts.map ?? null,
-    gradientMap: toonRamp(),
     emissive: opts.emissive ?? 0x000000,
     emissiveIntensity: opts.emissiveIntensity ?? 1,
+    rim: opts.rim !== undefined ? (opts.rimStrength ?? 1) : 0.7,
+    rimPower: opts.rimPower ?? 2.2,
     transparent: opts.transparent ?? false,
     opacity: opts.opacity ?? 1,
     side: opts.side ?? THREE.FrontSide,
+    roughness: opts.roughness ?? 0.6,
+    metalness: opts.metalness ?? 0,
   });
-  if (opts.rim !== undefined) addRim(mat, opts.rim, opts.rimPower ?? 2.6, opts.rimStrength ?? 1.2);
-  return mat;
-}
-
-export function addRim(mat: THREE.Material, color: THREE.ColorRepresentation, power: number, strength: number): void {
-  const rimColor = new THREE.Color(color);
-  const uniforms = { uRimColor: { value: rimColor }, uRimPower: { value: power }, uRimStrength: { value: strength } };
-  mat.userData.rim = uniforms;
-  mat.onBeforeCompile = (shader) => {
-    Object.assign(shader.uniforms, uniforms);
-    shader.fragmentShader = shader.fragmentShader
-      .replace('#include <common>', '#include <common>\nuniform vec3 uRimColor;\nuniform float uRimPower;\nuniform float uRimStrength;')
-      .replace(
-        '#include <opaque_fragment>',
-        `{
-          float rimDot = 1.0 - saturate(dot(normalize(normal), normalize(vViewPosition)));
-          float rim = smoothstep(0.45, 0.75, pow(rimDot, uRimPower) * 2.0);
-          outgoingLight += uRimColor * rim * uRimStrength;
-        }
-        #include <opaque_fragment>`,
-      );
-  };
-  mat.customProgramCacheKey = () => `rim-${power}`;
 }
 
 /**

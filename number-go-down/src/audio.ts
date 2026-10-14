@@ -236,6 +236,49 @@ export class GameAudio {
     this.vibrate([35, 40, 15]);
   }
 
+  /** SLAM: a whip-crack of air and a sub thump as he tucks and drops. */
+  slam(): void {
+    if (!this.ready()) return;
+    const t = this.now();
+    this.noiseBurst(t, 0.18, 'bandpass', 1800, 1.5, 0.5, this.sfx, 1.6);
+    this.tone(t, 'sawtooth', 320, 60, 0.22, 0.25);
+    this.tone(t + 0.02, 'sine', 90, 36, 0.3, 0.6);
+    this.vibrate(18);
+  }
+
+  /** A geyser or spout throwing him: a rising whoosh. */
+  whoosh(up = true): void {
+    if (!this.ready()) return;
+    const t = this.now();
+    const ctx = this.ctx!;
+    const src = ctx.createBufferSource();
+    src.buffer = this.noise;
+    const f = ctx.createBiquadFilter();
+    f.type = 'bandpass';
+    f.Q.value = 1.2;
+    f.frequency.setValueAtTime(up ? 250 : 2200, t);
+    f.frequency.exponentialRampToValueAtTime(up ? 2600 : 300, t + 0.45);
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(0.5, t + 0.12);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.55);
+    src.connect(f).connect(g).connect(this.sfx);
+    src.start(t);
+    src.stop(t + 0.6);
+    this.tone(t, 'sine', 70, 140, 0.4, 0.3);
+    this.vibrate([20, 30, 20]);
+  }
+
+  /** A trick sting: a quick rising power-chord arpeggio. */
+  sting(): void {
+    if (!this.ready()) return;
+    const t = this.now();
+    this.chord(t, [52], 0.5);
+    this.chord(t + 0.07, [59], 0.5);
+    this.chord(t + 0.14, [64, 71], 0.7);
+    this.vibrate([15, 20, 30]);
+  }
+
   /** Balatro: each scoring tick in a chain plays 1.6% higher. */
   scoreTick(t0: number): void {
     if (!this.ready()) return;
