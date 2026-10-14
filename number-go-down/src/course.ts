@@ -162,6 +162,14 @@ export class Course {
   private reactive: Obstacle[] = [];
   private scenery!: Scenery;
   private bullseye: THREE.MeshBasicMaterial | null = null;
+  private splashes: THREE.Vector3[] = [];
+
+  /** Positions where a whale broke the surface since the last frame. */
+  takeSplashes(): THREE.Vector3[] {
+    const out = this.splashes;
+    this.splashes = [];
+    return out;
+  }
   private mats = {
     glass: surf({ color: 0x7fffd4, transparent: true, opacity: 0.35, roughness: 0.1, metalness: 0.2, emissive: 0x0d4038, envMapIntensity: 2, rim: 1.2 }),
     crater: surf({ color: 0x1c0a26, emissive: 0x220418, roughness: 0.6 }),
@@ -911,6 +919,7 @@ export class Course {
     const width = base.sample.width;
     const g = whaleProp(1.25);
     const yaw = Math.atan2(-base.r.z, base.r.x);
+    let wasUnder = true;
     this.addKinematic('whale', 'WHALE', [
       RAPIER.ColliderDesc.capsule(1.6, 1.25).setRotation(new THREE.Quaternion().setFromEuler(new THREE.Euler(0, 0, Math.PI / 2))),
     ], g, { damageScale: 1.2, kick: 10, restitution: 0.9 }, (time, b) => {
@@ -919,6 +928,8 @@ export class Course {
       // Breaches up through the pool from under the road and sinks back out of sight.
       const breach = -1.7 + Math.max(0, Math.sin(time * speed * 2 + phase * 3)) * 5.2;
       const p = base.p.clone().addScaledVector(base.r, x).addScaledVector(base.n, breach);
+      if (wasUnder && breach > 0.2) this.splashes.push(p.clone().addScaledVector(base.n, 0.6 - breach));
+      wasUnder = breach <= 0.2;
       b.setNextKinematicTranslation({ x: p.x, y: p.y, z: p.z });
       const dir = Math.cos(time * speed + phase) >= 0 ? 0 : Math.PI;
       const pitch = Math.cos(time * speed * 2 + phase * 3) * 0.35;

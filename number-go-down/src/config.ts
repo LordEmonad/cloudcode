@@ -76,13 +76,13 @@ export const DAMAGE = {
   hitCooldown: 0.1,
   breakCooldown: 0.5, // report: 0.5 s per bone
   refImpact: 18, // m/s that counts as impact strength 1.0
-  chainWindow: 0.9, // seconds of silence before the combo meter starts to drain
-  chainDecay: 0.7, // seconds for a full meter to drain
+  chainWindow: 0.7, // seconds of silence before the combo meter starts to drain
+  chainDecay: 0.55, // seconds for a full meter to drain
   comboPerLink: 0.4,
   comboCap: 6,
   whaleBonus: 0.5, // each whale bonk adds +0.5x
-  slamDamage: 1.35, // impacts in the slam window hit harder
-  slamPoints: 1.6,
+  slamDamage: 1.2, // impacts in the slam window hit harder
+  slamPoints: 1.3,
 };
 
 export const SHOW = {

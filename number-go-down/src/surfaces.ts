@@ -41,7 +41,7 @@ export function tickSurfaces(time: number): void {
 }
 
 export function trackMaterial(style: SurfaceStyle): THREE.MeshStandardMaterial {
-  const mat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.5, metalness: 0.08, envMapIntensity: 0.55 });
+  const mat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.5, metalness: 0.06, envMapIntensity: 0.3 });
   const uniforms = {
     uBase: { value: new THREE.Color(style.base) },
     uBankA: { value: new THREE.Color(style.bankA) },
@@ -72,7 +72,7 @@ export function trackMaterial(style: SurfaceStyle): THREE.MeshStandardMaterial {
           if (part < 0.5) {
             // Road: black obsidian with a faint chart grid, neon edge lines and chevrons pointing down.
             float n = tNoise(vec2(u, v) * 0.35) * 0.6 + tNoise(vec2(u, v) * 1.7) * 0.4;
-            vec3 c = uBase * (0.7 + 0.6 * n);
+            vec3 c = uBase * (1.0 + 0.8 * n);
             vec2 g = abs(fract(vec2(u * 0.5, v * 0.25)) - 0.5);
             float grid = 1.0 - smoothstep(0.0, 0.02 + px * 0.5, min(g.x, g.y));
             c = mix(c, c * 1.6 + uNeon * 0.06, grid * 0.3);

@@ -245,7 +245,7 @@ export function buildEnvironment(renderer: THREE.WebGLRenderer): THREE.Texture {
         c += horizon * 0.8 * exp(-abs(y) * 10.0);
         float lampA = pow(clamp(dot(vDir, normalize(vec3(-0.7, 0.4, 0.5))), 0.0, 1.0), 60.0);
         float lampB = pow(clamp(dot(vDir, normalize(vec3(0.8, 0.1, -0.3))), 0.0, 1.0), 50.0);
-        c += vec3(1.0, 0.3, 0.85) * lampA * 6.0 + vec3(1.0, 0.5, 0.15) * lampB * 5.0;
+        c += vec3(1.0, 0.35, 0.8) * lampA * 2.5 + vec3(1.0, 0.55, 0.2) * lampB * 3.5;
         gl_FragColor = vec4(c, 1.0);
       }`,
   });
@@ -277,10 +277,10 @@ export class Lights {
   private rimB = new THREE.Color(PALETTE.ember).multiplyScalar(1.2);
 
   constructor(scene: THREE.Scene) {
-    this.hemi = new THREE.HemisphereLight(0xffd6dc, 0x3a0a18, 0.55);
-    this.key = new THREE.DirectionalLight(0xfff0e0, 2.6);
+    this.hemi = new THREE.HemisphereLight(0xffd6dc, 0x3a0a18, 0.9);
+    this.key = new THREE.DirectionalLight(0xfff0e0, 3.2);
     this.glow = new THREE.DirectionalLight(0xff5a20, 1.0);
-    this.follow = new THREE.PointLight(0xffd8e4, 12, 9, 1.8);
+    this.follow = new THREE.PointLight(0xffe6ea, 16, 9, 1.8);
     scene.add(this.hemi, this.key, this.key.target, this.glow, this.glow.target, this.follow);
     // Real-time shadow from the key light, only around Emonad (cheap and grounding).
     this.key.castShadow = true;

@@ -276,7 +276,7 @@ export class Hud {
       if ((diff > 0 && this.shown > this.target) || (diff < 0 && this.shown < this.target)) this.shown = this.target;
       this.tickerValue.textContent = fmt(Math.round(this.shown));
       // The "price": every 10k of damage is one more percent of the portfolio gone.
-      const pct = Math.min(99.99, 100 * (1 - Math.exp(-this.shown / 2_500_000)));
+      const pct = Math.min(99.99, 100 * (1 - Math.exp(-this.shown / 6_000_000)));
       this.pct.textContent = `-${pct.toFixed(2)}%`;
     }
   }

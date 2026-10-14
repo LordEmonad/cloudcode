@@ -217,7 +217,7 @@ export function candle(o: CandleOptions): THREE.Group {
   }
   if (dripGeos.length) g.add(new THREE.Mesh(mergeGeometries(dripGeos), mat));
   // A molten pool on top: a lighter, glossier inset.
-  const pool = new THREE.Mesh(new THREE.BoxGeometry(o.w * 0.84, 0.04, o.d * 0.84), neonMat(o.topGlow ?? (o.color === 'green' ? 0x7fffc8 : 0xff6a5a), 1.1));
+  const pool = new THREE.Mesh(new THREE.BoxGeometry(o.w * 0.84, 0.04, o.d * 0.84), neonMat(o.topGlow ?? (o.color === 'green' ? 0x3fd8a0 : 0xff4a3a), 0.55));
   pool.position.y = o.h / 2 + 0.01;
   g.add(pool);
   const wick = o.wick ?? 0;

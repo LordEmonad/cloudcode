@@ -768,6 +768,7 @@ export class Game {
     this.pendingSensors = [];
     for (const o of this.pendingGlass) this.presentGlass(o);
     this.pendingGlass = [];
+    for (const p of this.course.takeSplashes()) { this.particles.splash(p, 26, 7); }
     for (const c of this.pendingCallouts) {
       const p = this.hud.project(c.at, this.rig.camera);
       this.hud.callout(c.text, p.x, p.y - 50, c.style, c.sub);
@@ -990,7 +991,7 @@ export class Game {
     }
     this.lightning = Math.max(0, this.lightning - dt * 7);
     u.flash.value = this.lightning * (this.saved.settings.flashing ? 1 : 0.25);
-    this.lights.hemi.intensity = 0.55 + this.lightning * 1.4;
+    this.lights.hemi.intensity = 0.9 + this.lightning * 1.4;
     // The sky and the moon follow the camera; the lights follow Emonad.
     const cp = this.rig.camera.position;
     this.sky.position.copy(cp);
@@ -1011,7 +1012,7 @@ export class Game {
     const ray = new RAPIER.Ray({ x: target.x, y: target.y + 0.3, z: target.z }, { x: dir.x, y: dir.y, z: dir.z });
     const hit = this.world.castRay(ray, dist, true, RAPIER.QueryFilterFlags.EXCLUDE_SENSORS, groups(0xffff, GROUP.ENV));
     if (hit && hit.timeOfImpact < dist) {
-      const safe = Math.max(0.8, hit.timeOfImpact - 0.45);
+      const safe = Math.max(1.9, hit.timeOfImpact - 0.45);
       cam.set(target.x, target.y + 0.3, target.z).addScaledVector(dir, safe);
     }
   }

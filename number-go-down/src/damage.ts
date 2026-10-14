@@ -199,12 +199,14 @@ export class DamageModel {
 
     const tier: ImpactEvent['tier'] = broke ? 3 : strength >= 0.35 ? 2 : strength >= 0.08 ? 1 : 0;
     if (tier >= 1) {
-      // Every real hit feeds the chain; breaks feed it more.
-      this.chain += broke ? 2 : tier === 2 ? 1 : 0.5;
-      this.chainHeat = 1;
-      this.lastChainT = t;
       this.recentHits.push(t);
       this.recentHits = this.recentHits.filter((ht) => t - ht < 1);
+    }
+    if (tier >= 2) {
+      // Only real hits feed the chain (scrapes do not); breaks feed it more.
+      this.chain += broke ? 2 : 1;
+      this.chainHeat = 1;
+      this.lastChainT = t;
     }
     if (obstacle.kind === 'whale' && t - this.lastWhale > 1.2) {
       this.whales++;
@@ -244,11 +246,11 @@ export const BONE_NAMES: Record<PartId, string> = {
 export const RANKS: [number, string, string][] = [
   [0, 'BARELY A DIP', 'buy the dip they said'],
   [150_000, 'PAPER HANDS', 'folded on the first red candle'],
-  [400_000, 'DEGEN', 'leverage was a choice'],
-  [900_000, 'LIQUIDATED', 'margin call answered'],
-  [1_800_000, 'WHALE FOOD', 'eaten alive'],
-  [3_500_000, 'TOTALLY REKT', 'every bone, every candle'],
-  [7_000_000, 'REKT LEGEND', 'number went all the way down'],
+  [500_000, 'DEGEN', 'leverage was a choice'],
+  [1_200_000, 'LIQUIDATED', 'margin call answered'],
+  [3_000_000, 'WHALE FOOD', 'eaten alive'],
+  [7_000_000, 'TOTALLY REKT', 'every bone, every candle'],
+  [15_000_000, 'REKT LEGEND', 'number went all the way down'],
 ];
 
 export function rankFor(score: number): [string, string] {

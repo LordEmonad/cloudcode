@@ -101,9 +101,9 @@ export class CameraRig {
       if (vertical > 0.85 || up.lengthSq() < 0.05) up.copy(this.flatFwd).negate();
       up.normalize();
       const fast = THREE.MathUtils.clamp(speed / 26, 0, 1);
-      const desiredDist = THREE.MathUtils.lerp(4.6, 7.2, fast) + vertical * 5;
+      const desiredDist = THREE.MathUtils.lerp(3.9, 6.2, fast) + vertical * 5;
       this.dist += (desiredDist - this.dist) * (1 - Math.exp(-dt * 2));
-      this.height += (THREE.MathUtils.lerp(1.9, 1.4, vertical) - this.height) * (1 - Math.exp(-dt * 2));
+      this.height += (THREE.MathUtils.lerp(1.7, 1.4, vertical) - this.height) * (1 - Math.exp(-dt * 2));
       // Stay on the track's centreline sideways, but follow him most of the way.
       const lateral = target.clone().sub(frame.point).dot(frame.right);
       const anchor = frame.point.clone().addScaledVector(frame.right, lateral * 0.75);
