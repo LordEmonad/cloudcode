@@ -241,7 +241,7 @@ export class Course {
       const names = Object.keys(list[0].geo.attributes).filter((n) => list.every((x) => n in x.geo.attributes));
       const indexed = list.every((x) => x.geo.index);
       const geos = list.map((x) => {
-        const g = indexed ? x.geo : x.geo.toNonIndexed();
+        const g = indexed || !x.geo.index ? x.geo : x.geo.toNonIndexed();
         for (const n of Object.keys(g.attributes)) if (!names.includes(n)) g.deleteAttribute(n);
         g.morphAttributes = {};
         return g;

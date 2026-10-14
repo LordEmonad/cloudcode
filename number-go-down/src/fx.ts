@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import {
-  EffectComposer, RenderPass, EffectPass, BloomEffect, ChromaticAberrationEffect, VignetteEffect,
-  NoiseEffect, ToneMappingEffect, ToneMappingMode, Effect, BlendFunction, GodRaysEffect, KernelSize,
+  EffectComposer, RenderPass, EffectPass, BloomEffect,
+  ToneMappingEffect, ToneMappingMode, Effect, BlendFunction, GodRaysEffect, KernelSize,
 } from 'postprocessing';
 import { softDotTexture, starTexture } from './textures';
 
@@ -259,7 +259,7 @@ export class EmberField {
     uDensity: { value: 1 },
   };
 
-  constructor(scene: THREE.Scene, count = 2600) {
+  constructor(scene: THREE.Scene, count = 1500) {
     const seeds = new Float32Array(count * 4);
     for (let i = 0; i < seeds.length; i++) seeds[i] = Math.random();
     const geo = new THREE.BufferGeometry();
@@ -285,8 +285,10 @@ export class EmberField {
           // Fade near the box faces so wrapping never pops; thin out with uDensity.
           vec3 q = abs(p - uCenter) / (uBox * 0.5);
           float edge = 1.0 - smoothstep(0.75, 1.0, max(max(q.x, q.y), q.z));
-          vAlpha = flick * edge * step(seed.x * 0.999, uDensity);
-          gl_PointSize = (0.05 + seed.y * 0.09) * uScale / max(0.5, -mv.z);
+          // Embers right in front of the lens would be huge sprites: shrink and fade them (overdraw).
+          float near = smoothstep(1.0, 5.0, -mv.z);
+          vAlpha = flick * edge * step(seed.x * 0.999, uDensity) * near;
+          gl_PointSize = (0.05 + seed.y * 0.09) * uScale / max(0.5, -mv.z) * (0.4 + 0.6 * near);
           gl_Position = projectionMatrix * mv;
         }`,
       fragmentShader: `
@@ -334,6 +336,9 @@ const gradeShader = /* glsl */ `
   uniform float seed;
   uniform float heat;
   uniform float pop;
+  uniform float chroma;
+  uniform float vignette;
+  uniform float grain;
   float gh(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
   float gn(vec2 p) { vec2 i = floor(p), f = fract(p); vec2 u = f * f * (3.0 - 2.0 * f);
     return mix(mix(gh(i), gh(i + vec2(1, 0)), u.x), mix(gh(i + vec2(0, 1)), gh(i + vec2(1, 1)), u.x), u.y); }
@@ -343,7 +348,14 @@ const gradeShader = /* glsl */ `
     uv += vec2(gn(uv * 18.0 + vec2(0.0, seed * 2.5)) - 0.5, gn(uv * 18.0 + vec2(7.0, seed * 2.1)) - 0.5) * amt;
   }
   void mainImage(const in vec4 inputColor, const in vec2 uv, out vec4 outputColor) {
+    vec2 d = uv - 0.5;
+    // Chromatic aberration on hits: red and blue pulled apart radially.
     vec3 c = inputColor.rgb;
+    if (chroma > 0.001) {
+      vec2 off = d * chroma * 0.012;
+      c.r = texture2D(inputBuffer, uv + off).r;
+      c.b = texture2D(inputBuffer, uv - off).b;
+    }
     // Punch: a little contrast and saturation, blacks crushed toward ink purple.
     float l = dot(c, vec3(0.299, 0.587, 0.114));
     c = mix(vec3(l), c, 1.0 + 0.18 * pop);
@@ -352,7 +364,6 @@ const gradeShader = /* glsl */ `
     c = mix(c, vec3(l), desat);
     c = mix(c, c * vec3(0.78, 0.93, 1.22) + vec3(0.0, 0.015, 0.05), cool);
     // Speed lines toward the screen edges, stronger the faster he goes.
-    vec2 d = uv - 0.5;
     float ang = atan(d.y, d.x);
     float lane = floor(ang * 44.0 / 3.14159);
     float h = fract(sin(lane * 91.7 + floor(seed * 12.0) * 3.1) * 43758.5);
@@ -360,9 +371,11 @@ const gradeShader = /* glsl */ `
     float line = step(0.8, h) * smoothstep(0.3, 0.62, r) * speed;
     c += vec3(1.0, 0.92, 0.96) * line * 0.28;
     c = mix(c, vec3(1.0, 0.97, 0.94), flash * 0.4);
-    // Dither so the dark red-purple gradients do not band in 8-bit buffers.
+    // Vignette and film grain (grain only during cinematics).
+    float v = smoothstep(0.3, 1.1, length(d * vec2(1.0, 1.2)) * 1.3);
+    c *= 1.0 - v * vignette;
     float n = fract(sin(dot(uv * 1000.0 + seed, vec2(12.9898, 78.233))) * 43758.5453);
-    c += (n - 0.5) / 255.0;
+    c += (n - 0.5) * (grain * 0.12 + 1.0 / 255.0);
     outputColor = vec4(c, inputColor.a);
   }
 `;
@@ -379,6 +392,9 @@ class GradeEffect extends Effect {
         ['seed', new THREE.Uniform(0)],
         ['heat', new THREE.Uniform(0)],
         ['pop', new THREE.Uniform(1)],
+        ['chroma', new THREE.Uniform(0)],
+        ['vignette', new THREE.Uniform(0.38)],
+        ['grain', new THREE.Uniform(0)],
       ]),
     });
   }
@@ -391,39 +407,53 @@ export interface GradeParams {
 export class Post {
   readonly composer: EffectComposer;
   private grade = new GradeEffect();
-  private chroma: ChromaticAberrationEffect;
-  private vignette: VignetteEffect;
-  private noise: NoiseEffect;
   private bloom: BloomEffect | null = null;
   private rays: GodRaysEffect | null = null;
+  private heavy: EffectPass | null = null;
   enabled = true;
+  /** 2 = god rays + bloom, 1 = bloom only, 0 = grade only. */
+  quality = 2;
 
   constructor(private renderer: THREE.WebGLRenderer, private scene: THREE.Scene, private camera: THREE.Camera, quality: 'high' | 'low', moon?: THREE.Mesh) {
+    const touch = navigator.maxTouchPoints > 0;
     this.composer = new EffectComposer(renderer, {
-      multisampling: quality === 'high' ? Math.min(4, renderer.capabilities.maxSamples) : 0,
+      // MSAA is a big fill cost on phones; the stylised look reads fine without it there.
+      multisampling: quality === 'high' && !touch ? Math.min(4, renderer.capabilities.maxSamples) : 0,
       frameBufferType: THREE.HalfFloatType,
     });
     this.composer.addPass(new RenderPass(scene, camera));
-    this.chroma = new ChromaticAberrationEffect({ offset: new THREE.Vector2(0, 0), radialModulation: true, modulationOffset: 0.2 });
-    this.vignette = new VignetteEffect({ offset: 0.3, darkness: 0.38 });
-    this.noise = new NoiseEffect({ premultiply: true, blendFunction: BlendFunction.OVERLAY });
-    this.noise.blendMode.opacity.value = 0;
-    const effects: Effect[] = [];
     if (quality === 'high') {
+      const effects: Effect[] = [];
       if (moon) {
         // Light shafts from the eclipse corona, broken up by the spires and candle towers.
-        this.rays = new GodRaysEffect(camera, moon, { resolutionScale: 0.5, density: 0.92, decay: 0.94, weight: 0.5, exposure: 0.55, samples: 48, clampMax: 1, kernelSize: KernelSize.SMALL, blur: true });
+        this.rays = new GodRaysEffect(camera, moon, { resolutionScale: 0.4, density: 0.92, decay: 0.94, weight: 0.5, exposure: 0.55, samples: 32, clampMax: 1, kernelSize: KernelSize.SMALL, blur: true });
         effects.push(this.rays);
       }
       // Bloom only catches emissive signs, gates, flames and sparks (report: 4-5 levels, half resolution).
-      this.bloom = new BloomEffect({ mipmapBlur: true, intensity: 1.25, luminanceThreshold: 0.88, luminanceSmoothing: 0.15, levels: 6, radius: 0.75 });
+      this.bloom = new BloomEffect({ mipmapBlur: true, intensity: 0.75, luminanceThreshold: 1.0, luminanceSmoothing: 0.2, levels: 6, radius: 0.7 });
       effects.push(this.bloom);
+      this.heavy = new EffectPass(camera, ...effects);
+      this.composer.addPass(this.heavy);
+    } else {
+      this.quality = 0;
     }
-    // The grade transforms UVs (heat haze), so it cannot share a pass with any convolution
-    // effect (god rays, bloom, chromatic aberration): it gets a pass of its own.
-    if (effects.length) this.composer.addPass(new EffectPass(camera, ...effects));
-    this.composer.addPass(new EffectPass(camera, this.grade));
-    this.composer.addPass(new EffectPass(camera, this.chroma, this.noise, this.vignette, new ToneMappingEffect({ mode: ToneMappingMode.NEUTRAL })));
+    // The grade (chroma, haze, speed lines, vignette, grain) and tone mapping in one pass.
+    this.composer.addPass(new EffectPass(camera, this.grade, new ToneMappingEffect({ mode: ToneMappingMode.NEUTRAL })));
+  }
+
+  /** Step the heavy effects down when frames run long. Returns false if nothing is left to drop. */
+  dropQuality(): boolean {
+    if (this.quality === 2 && this.rays) {
+      this.rays.blendMode.opacity.value = 0;
+      this.quality = 1;
+      return true;
+    }
+    if (this.quality >= 1 && this.heavy) {
+      this.heavy.enabled = false;
+      this.quality = 0;
+      return true;
+    }
+    return false;
   }
 
   setSize(w: number, h: number): void {
@@ -438,10 +468,9 @@ export class Post {
     u.get('speed')!.value = THREE.MathUtils.clamp((speed - 14) / 16, 0, 1);
     u.get('seed')!.value = t;
     u.get('heat')!.value = p.heat;
-    const o = 0.004 * p.chroma;
-    this.chroma.offset.set(o, o * 0.6);
-    this.vignette.darkness = p.vignette;
-    this.noise.blendMode.opacity.value = p.grain * 0.35;
+    u.get('chroma')!.value = p.chroma;
+    u.get('vignette')!.value = p.vignette;
+    u.get('grain')!.value = p.grain;
   }
 
   render(dt: number): void {

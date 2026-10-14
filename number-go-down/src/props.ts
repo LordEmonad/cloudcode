@@ -54,7 +54,7 @@ export function compact(g: THREE.Group): THREE.Group {
     const names = Object.keys(geos[0].attributes).filter((n) => geos.every((x) => n in x.attributes));
     const indexed = geos.every((x) => x.index);
     const ready = geos.map((x) => {
-      const y = indexed ? x : x.toNonIndexed();
+      const y = indexed || !x.index ? x : x.toNonIndexed();
       for (const n of Object.keys(y.attributes)) if (!names.includes(n)) y.deleteAttribute(n);
       return y;
     });

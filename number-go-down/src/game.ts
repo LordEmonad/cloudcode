@@ -157,7 +157,10 @@ export class Game {
     this.face = new Face(this.ragdoll);
     this.particles = new Particles(this.scene);
     this.embers = new EmberField(this.scene);
-    const lowEnd = (navigator.hardwareConcurrency ?? 8) <= 4;
+    // Only very weak devices start without the heavy effects; the governor drops them later if frames run long.
+    const q = new URLSearchParams(location.search).get('quality');
+    const mem = (navigator as Navigator & { deviceMemory?: number }).deviceMemory;
+    const lowEnd = q ? q === 'low' : (navigator.hardwareConcurrency ?? 8) <= 2 || (mem !== undefined && mem <= 2);
     this.post = new Post(this.renderer, this.scene, this.rig.camera, lowEnd ? 'low' : 'high', this.moon);
     this.hud = new Hud(document.getElementById('hud')!);
     this.hud.onAgain = () => { this.audio.ui(); this.resetRun(); };
@@ -882,10 +885,11 @@ export class Game {
 
   private frame(): void {
     const now = performance.now();
-    const realDt = Math.min(0.05, (now - this.last) / 1000);
+    const rawDt = (now - this.last) / 1000;
+    const realDt = Math.min(0.05, rawDt);
     this.last = now;
     this.realT += realDt;
-    this.trackPerformance(realDt);
+    this.trackPerformance(rawDt);
 
     this.director.update(realDt);
     const timeScale = this.director.timeScale;
@@ -1128,17 +1132,18 @@ export class Game {
 
   // ---------------------------------------------------------------- perf + tests
 
-  /** Quality governor: drop resolution if frames run long. */
-  private trackPerformance(dt: number): void {
-    this.frameTimes.push(dt);
+  /** Quality governor: drop resolution, then god rays, then bloom, if frames run long. */
+  private trackPerformance(rawDt: number): void {
+    this.frameTimes.push(rawDt);
     if (this.frameTimes.length < 90) return;
     const avg = this.frameTimes.reduce((a, b) => a + b, 0) / this.frameTimes.length;
     this.frameTimes = [];
     this.stats.fps = Math.round(1 / avg);
-    if (avg > 1 / 45 && this.pixelRatio > 1) {
+    if (avg <= 1 / 45) return;
+    if (this.pixelRatio > 1) {
       this.pixelRatio = Math.max(1, this.pixelRatio - 0.25);
       this.resize();
-    }
+    } else this.post.dropQuality();
   }
 
   private publishTestState(): void {
