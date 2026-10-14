@@ -234,7 +234,7 @@ export class Hud {
             <div><b>${r.broken.length}</b>/12 bones</div>
             <div><b>${r.hits}</b> hits</div>
             <div><b>${r.maxImpact.toFixed(0)}</b> m/s top hit</div>
-            <div><b>${r.time.toFixed(1)}</b> s fall</div>
+            <div><b>${r.time.toFixed(1)}</b> s run</div>
             ${r.whales ? `<div><b>${r.whales}</b> whale${r.whales > 1 ? 's' : ''} bonked</div>` : ''}
           </div>
         </div>

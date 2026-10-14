@@ -29,6 +29,11 @@ if (opt('aimshot', '')) {
   await page.screenshot({ path: `${prefix}_aim.png` });
 }
 await page.evaluate(([x, y]) => window.__ngd.fling(x, y), [dx, dy]);
+if (opt('warp', '')) {
+  const [name, t] = opt('warp', '').split(':');
+  await page.waitForTimeout(300);
+  await page.evaluate(([n, f]) => window.__ngd.warp(n, Number(f || 0)), [name, t]);
+}
 const start = Date.now();
 const log = [];
 for (let i = 0; i < count; i++) {

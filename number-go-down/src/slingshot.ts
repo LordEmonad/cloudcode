@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { toon } from './materials';
 import { studdedBeltTexture, guitarNeckTexture } from './textures';
 import { LAUNCH, PHYSICS } from './config';
@@ -67,12 +68,15 @@ export class Slingshot {
       head.position.y = 4.2;
       head.rotation.z = side * 0.12;
       g.add(head);
+      // Tuning pegs: one merged mesh per headstock.
+      const pegs: THREE.BufferGeometry[] = [];
       for (let i = 0; i < 6; i++) {
-        const peg = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 0.24, 8), pegMat);
-        peg.rotation.z = Math.PI / 2;
-        peg.position.set((i < 3 ? -1 : 1) * 0.38, 3.8 + (i % 3) * 0.33, 0);
-        g.add(peg);
+        const peg = new THREE.CylinderGeometry(0.06, 0.06, 0.24, 8);
+        peg.rotateZ(Math.PI / 2);
+        peg.translate((i < 3 ? -1 : 1) * 0.38, 3.8 + (i % 3) * 0.33, 0);
+        pegs.push(peg);
       }
+      g.add(new THREE.Mesh(mergeGeometries(pegs), pegMat));
       g.position.copy(base).add(new THREE.Vector3(side * 2.4, 0, 0));
       g.rotation.z = side * -0.12;
       this.group.add(g);

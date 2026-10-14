@@ -990,6 +990,14 @@ export class Game {
         const aim = this.sling.aimFromDrag(dx, dy, window.innerHeight);
         this.sling.setPull(aim.pull, aim.velocity);
       },
+      // Jump Emonad to a fraction of a named section (visual tests of later zones).
+      warp: (name: string, t = 0, speed = 10) => {
+        const sec = this.course.track.section(name);
+        const at = this.course.track.at(sec.s0 + (sec.s1 - sec.s0) * t, 0, 1.5);
+        this.ragdoll.teleport(at.p.clone().sub(this.ragdoll.centerOfMass()), at.f.clone().multiplyScalar(speed));
+        this.farthest = at.sample.s;
+        this.farthestAt = this.simT;
+      },
       // Headless course-flow test: run physics only, as fast as possible, and trace the run.
       simulate: (seconds: number, steerPlan: [number, number][] = []) => {
         const trace: { t: number; s: number; seg: number; name: string; y: number; v: number }[] = [];

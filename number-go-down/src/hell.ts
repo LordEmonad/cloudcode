@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { signTexture } from './textures';
 import { neon } from './materials';
 
@@ -28,15 +29,19 @@ const LAVA_GLSL = /* glsl */ `
     // Domain-warp so the crust drifts like it is floating on something hot.
     vec2 w = vec2(vnoise(p * 0.21 + t * 0.05), vnoise(p * 0.21 - t * 0.04 + 7.3)) * 2.4;
     vec2 c = cells(p * 0.42 + w, t);
-    float crack = 1.0 - smoothstep(0.0, 0.16, c.y - c.x);
-    float heat = vnoise(p * 0.12 - t * 0.08);
-    float pulse = 0.75 + 0.25 * sin(t * 1.7 + heat * 9.0);
-    float thin = 1.0 - smoothstep(0.0, 0.06, c.y - c.x);
-    vec3 crust = mix(vec3(0.025, 0.006, 0.006), vec3(0.09, 0.02, 0.015), heat) * (0.5 + 0.8 * c.x);
-    vec3 glow = mix(vec3(1.4, 0.18, 0.01), vec3(3.4, 1.4, 0.32), thin * heat) * pulse;
-    // Hot pools where the crust has melted through.
-    float pool = smoothstep(0.62, 0.8, heat) * smoothstep(0.15, 0.0, c.x);
-    return mix(crust, glow, max(crack * 0.85, pool));
+    float edge = c.y - c.x;
+    // Heat varies over large areas: mostly black crust, with hot regions where it all glows.
+    float heat = vnoise(p * 0.07 - t * 0.03) * 0.65 + vnoise(p * 0.19 + 3.1) * 0.35;
+    float hotZone = smoothstep(0.42, 0.74, heat);
+    float crack = (1.0 - smoothstep(0.0, 0.04 + 0.1 * hotZone, edge)) * (0.2 + 0.8 * hotZone);
+    // Molten rivers winding through the crust.
+    float r = abs(sin(vnoise(p * 0.045 + w * 0.08) * 11.0 + t * 0.25));
+    float river = (1.0 - smoothstep(0.0, 0.1, r)) * smoothstep(0.3, 0.6, heat);
+    float pulse = 0.8 + 0.2 * sin(t * 1.7 + heat * 9.0);
+    vec3 crust = mix(vec3(0.018, 0.004, 0.006), vec3(0.075, 0.02, 0.014), c.x);
+    vec3 glow = mix(vec3(1.1, 0.12, 0.01), vec3(3.2, 1.3, 0.3), hotZone) * pulse;
+    float pool = smoothstep(0.8, 0.92, heat) * smoothstep(0.22, 0.0, c.x);
+    return mix(crust, glow, clamp(max(max(crack, river * 0.9), pool), 0.0, 1.0));
   }
 `;
 
@@ -195,12 +200,15 @@ export interface SceneryOptions {
   fallStart: number;
 }
 
+const _flameScale = new THREE.Vector3();
+
 /** Distant spires, burning candle towers, tumbling coins and joke billboards. */
 export class Scenery {
   group = new THREE.Group();
   private coins: THREE.InstancedMesh;
   private coinData: { p: THREE.Vector3; spin: THREE.Vector3; rot: THREE.Euler; fall: number }[] = [];
-  private flames: THREE.Mesh[] = [];
+  private flameMesh!: THREE.InstancedMesh;
+  private flameData: { p: THREE.Vector3; s: number }[] = [];
   private seaY = -300;
 
   constructor(scene: THREE.Scene, opts: SceneryOptions) {
@@ -214,6 +222,9 @@ export class Scenery {
       return path[i].clone().lerp(path[i + 1], f - i);
     };
 
+    // Keep set dressing out of the way of the course (and its camera).
+    const clear = (x: number, z: number, r: number) => path.every((q) => (q.x - x) ** 2 + (q.z - z) ** 2 > r * r);
+
     // Lava sea, with a hole for the shaft.
     const seaY = opts.seaY;
     const sea = new THREE.Mesh(new THREE.RingGeometry(opts.holeRadius, 1400, 64, 4), lavaMaterial());
@@ -222,51 +233,86 @@ export class Scenery {
     this.group.add(sea);
     this.seaY = seaY;
 
-    // Rock spires: jagged cones rising out of the lava.
-    const spireMat = new THREE.MeshToonMaterial({ color: 0x2a1418, emissive: 0x3a0804 });
+    // Rock spires: black silhouettes rising out of the lava, lit from below.
+    const spireMat = new THREE.MeshBasicMaterial({ vertexColors: true });
+    const spireGeos: THREE.BufferGeometry[] = [];
+    const hotBase = new THREE.Color(0xff4a12);
+    const cold = new THREE.Color(0x120608);
     for (let k = 0; k < 46; k++) {
-      const t = rand();
+      const t = rand() * opts.fallStart;
       const c = along(t);
       const side = k % 2 ? 1 : -1;
-      const dist = 26 + rand() * 140;
+      const dist = 30 + rand() * 150;
       const h = 60 + rand() * 260;
       const r = 4 + rand() * 14;
-      const geo = new THREE.ConeGeometry(r, h, 6, 6);
+      const geo = new THREE.ConeGeometry(r, h, 7, 8);
       const pos = geo.attributes.position;
+      const cols = new Float32Array(pos.count * 3);
+      const col = new THREE.Color();
       for (let i = 0; i < pos.count; i++) {
         const y = pos.getY(i);
         const j = (smooth3(pos.getX(i) * 0.3, y * 0.08 + k, pos.getZ(i) * 0.3) - 0.5) * r * 0.6;
         pos.setX(i, pos.getX(i) + j);
         pos.setZ(i, pos.getZ(i) - j * 0.6);
+        const up = (y + h / 2) / h;
+        col.copy(hotBase).lerp(cold, Math.min(1, Math.pow(up * 3.2, 0.7))).multiplyScalar(1 + (1 - Math.min(1, up * 4)) * 0.8);
+        cols.set([col.r, col.g, col.b], i * 3);
       }
-      geo.computeVertexNormals();
-      const m = new THREE.Mesh(geo, spireMat);
-      m.position.set(c.x + side * dist, seaY + h / 2 - 10, c.z + (rand() - 0.5) * 60);
-      m.rotation.y = rand() * Math.PI;
-      this.group.add(m);
+      geo.setAttribute('color', new THREE.BufferAttribute(cols, 3));
+      const x = c.x + side * dist;
+      const z = c.z + (rand() - 0.5) * 60;
+      if (!clear(x, z, r + 16)) { geo.dispose(); continue; }
+      geo.rotateY(rand() * Math.PI);
+      geo.translate(x, seaY + h / 2 - 10, z);
+      spireGeos.push(geo);
     }
+    // One draw call for the whole skyline.
+    if (spireGeos.length) this.group.add(new THREE.Mesh(mergeGeometries(spireGeos), spireMat));
 
-    // Burning candle towers: giant red candles with fire on their wicks.
+    // Burning candle towers: giant red candles with fire on their wicks (two draw calls in all).
     const candleMat = new THREE.MeshToonMaterial({ color: 0x9c0a22, emissive: 0x3a0008 });
-    const flameMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(0xff7a20).multiplyScalar(2.4), toneMapped: false, fog: false });
+    const towerGeos: THREE.BufferGeometry[] = [];
+    const flameAt: { p: THREE.Vector3; s: number }[] = [];
     for (let k = 0; k < 14; k++) {
       const c = along(0.05 + (k / 14) * opts.fallStart);
       const side = k % 2 ? 1 : -1;
       const w = 6 + rand() * 6;
       const h = 90 + rand() * 160;
-      const g = new THREE.Group();
-      const body = new THREE.Mesh(new THREE.BoxGeometry(w, h, w), candleMat);
-      g.add(body);
-      const wick = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.5, h * 0.12, 6), new THREE.MeshBasicMaterial({ color: 0x0b0410 }));
-      wick.position.y = h / 2 + h * 0.06;
-      g.add(wick);
-      const flame = new THREE.Mesh(new THREE.ConeGeometry(w * 0.35, w * 1.4, 10), flameMat);
-      flame.position.y = h / 2 + h * 0.12 + w * 0.5;
-      g.add(flame);
-      this.flames.push(flame);
-      g.position.set(c.x + side * (40 + rand() * 50), Math.max(seaY + h / 2 - 20, c.y - 120 + rand() * 60), c.z - 10 + rand() * 20);
-      this.group.add(g);
+      const pos = new THREE.Vector3(c.x + side * (40 + rand() * 50), Math.max(seaY + h / 2 - 20, c.y - 120 + rand() * 60), c.z - 10 + rand() * 20);
+      if (!clear(pos.x, pos.z, w + 18)) continue;
+      const body = new THREE.BoxGeometry(w, h, w);
+      body.translate(pos.x, pos.y, pos.z);
+      towerGeos.push(body);
+      const wick = new THREE.BoxGeometry(1, h * 0.12, 1);
+      wick.translate(pos.x, pos.y + h / 2 + h * 0.06, pos.z);
+      towerGeos.push(wick);
+      flameAt.push({ p: new THREE.Vector3(pos.x, pos.y + h / 2 + h * 0.12 + w * 0.5, pos.z), s: w });
     }
+    if (towerGeos.length) this.group.add(new THREE.Mesh(mergeGeometries(towerGeos), candleMat));
+    const flameGeo = new THREE.ConeGeometry(0.35, 1.4, 10);
+    this.flameMesh = new THREE.InstancedMesh(flameGeo, new THREE.MeshBasicMaterial({ color: new THREE.Color(0xff7a20).multiplyScalar(2.4), toneMapped: false, fog: false }), Math.max(1, flameAt.length));
+    this.flameData = flameAt;
+    this.group.add(this.flameMesh);
+
+    // The crash chart: a colossal neon price line plunging across hell's sky.
+    const end = path[path.length - 1];
+    const pts: THREE.Vector3[] = [];
+    let y = end.y + 420;
+    for (let k = 0; k <= 36; k++) {
+      y += (k % 3 === 0 ? 22 : -34) * (0.6 + ((k * 37) % 10) / 12);
+      pts.push(new THREE.Vector3(end.x - 330 + k * 19, Math.max(end.y - 40, y - k * 4), end.z - 360 - k * 4));
+    }
+    const curve = new THREE.CatmullRomCurve3(pts, false, 'catmullrom', 0);
+    const chartMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(0xff2a4d).multiplyScalar(2.4), toneMapped: false, fog: false });
+    this.group.add(new THREE.Mesh(new THREE.TubeGeometry(curve, 360, 2.2, 6, false), chartMat));
+    const glowMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(0xff2a4d).multiplyScalar(0.5), toneMapped: false, fog: false, transparent: true, opacity: 0.35, depthWrite: false });
+    this.group.add(new THREE.Mesh(new THREE.TubeGeometry(curve, 360, 6, 6, false), glowMat));
+    const last = pts[pts.length - 1];
+    const tag = new THREE.Mesh(new THREE.PlaneGeometry(90, 28), neon(signTexture('-99.9%', { color: '#ff2a4d', glow: '#ff2a4d', stroke: '#1a0006', width: 512, height: 160 }), 2.2));
+    (tag.material as THREE.MeshBasicMaterial).fog = false;
+    tag.position.copy(last).add(new THREE.Vector3(30, -30, 0));
+    tag.lookAt(path[0].clone().setY(tag.position.y));
+    this.group.add(tag);
 
     // Golden coins tumbling down through hell's sky.
     const coinGeo = new THREE.CylinderGeometry(1.2, 1.2, 0.22, 24);
@@ -290,6 +336,7 @@ export class Scenery {
       ['BUY THE DIP', '#ff2a4d'], ['-99.9%', '#ff2a4d'], ['FEW', '#39f0b0'], ['GM', '#ff4fd8'], ['REKT', '#ff2a4d'],
       ['LIQUIDATED', '#ff8a3a'], ['NUMBER GO DOWN', '#ff2a4d'],
     ];
+    const poles: THREE.BufferGeometry[] = [];
     jokes.forEach(([text, color], k) => {
       const t = 0.05 + (k / jokes.length) * (opts.fallStart - 0.08);
       const c = along(t);
@@ -303,10 +350,12 @@ export class Scenery {
       // Face back up the track, toward the camera chasing Emonad.
       board.lookAt(board.position.clone().sub(f).addScaledVector(r, -side * 0.6));
       this.group.add(board);
-      const pole = new THREE.Mesh(new THREE.BoxGeometry(0.3, 6, 0.3), new THREE.MeshToonMaterial({ color: 0x1a1018 }));
-      pole.position.copy(board.position).add(new THREE.Vector3(0, -4, 0));
-      this.group.add(pole);
+      // Long poles rising out of the abyss, merged into one draw call below.
+      const pole = new THREE.BoxGeometry(0.35, 44, 0.35);
+      pole.translate(board.position.x, board.position.y - 23, board.position.z);
+      poles.push(pole);
     });
+    this.group.add(new THREE.Mesh(mergeGeometries(poles), new THREE.MeshBasicMaterial({ color: 0x14080e })));
   }
 
   update(time: number, dt: number): void {
@@ -320,9 +369,11 @@ export class Scenery {
       this.coins.setMatrixAt(k, m);
     });
     this.coins.instanceMatrix.needsUpdate = true;
-    this.flames.forEach((f, k) => {
+    this.flameData.forEach((f, k) => {
       const s = 1 + Math.sin(time * 9 + k * 1.7) * 0.12 + Math.sin(time * 23 + k) * 0.05;
-      f.scale.set(1 / Math.sqrt(s), s, 1 / Math.sqrt(s));
+      m.compose(f.p, q.identity(), _flameScale.set(f.s / Math.sqrt(s), f.s * s, f.s / Math.sqrt(s)));
+      this.flameMesh.setMatrixAt(k, m);
     });
+    this.flameMesh.instanceMatrix.needsUpdate = true;
   }
 }

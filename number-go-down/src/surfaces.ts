@@ -84,8 +84,8 @@ export function trackMaterial(style: SurfaceStyle): THREE.MeshToonMaterial {
             trackGlow += uNeon * arrow * 0.55;
             c = mix(c, uNeon * 0.25, arrow * 0.5);
             if (uCrack > 0.0) {
-              float k = tCrack(vec2(u * 0.55, v * 0.22));
-              float hot = (1.0 - smoothstep(0.0, 0.035 + px * 0.15, k)) * smoothstep(0.55, 0.85, tNoise(vec2(u, v) * 0.09 + 3.0));
+              float k = tCrack(vec2(u * 0.8, v * 0.32));
+              float hot = (1.0 - smoothstep(0.0, 0.025 + px * 0.12, k)) * smoothstep(0.5, 0.85, tNoise(vec2(u, v) * 0.09 + 3.0));
               float pulse = 0.8 + 0.2 * sin(uTime * 2.2 + v * 0.15);
               trackGlow += vec3(2.4, 0.55, 0.08) * hot * uCrack * pulse;
               c = mix(c, vec3(0.05, 0.0, 0.0), hot * uCrack * 0.6);

@@ -112,7 +112,7 @@ export interface Frame {
 const STYLES: Partial<Record<ZoneId, SurfaceStyle>> = {
   dip: { base: 0x2c0812, bankA: 0x12060a, bankB: 0xa8102a, neon: 0xff2a4d, crack: 0, halfWidth: 5.5 },
   whale: { base: 0x0b1236, bankA: 0x080a22, bankB: 0x2a58d8, neon: 0x3ad8ff, crack: 0, halfWidth: 6.5 },
-  inferno: { base: 0x1c0904, bankA: 0x140604, bankB: 0xd04a0c, neon: 0xff8a1a, crack: 1, halfWidth: 5 },
+  inferno: { base: 0x1c0904, bankA: 0x140604, bankB: 0xd04a0c, neon: 0xff8a1a, crack: 0.7, halfWidth: 5 },
   abyss: { base: 0x14061e, bankA: 0x0c0412, bankB: 0x5a1a8a, neon: 0xa259ff, crack: 0, halfWidth: 6 },
 };
 
@@ -149,6 +149,7 @@ export class Course {
   private moving: Obstacle[] = [];
   private scenery!: Scenery;
   private flames: { mesh: THREE.InstancedMesh; base: THREE.Matrix4[] } | null = null;
+  private bullseye: THREE.MeshBasicMaterial | null = null;
   private mats = {
     red: toon(0xe8102e, { emissive: 0x4a0010, rim: 0xff9a8a, rimStrength: 0.45 }),
     redDark: toon(0x8a0c22),
@@ -157,9 +158,11 @@ export class Course {
     whale: toon(0x3d7bff, { emissive: 0x081a40, rim: 0x9fe8ff, rimStrength: 0.6 }),
     whaleBelly: toon(0xdfe8ff),
     ink: toon(0x0b0410),
+    outline: toon(0x0b0410, { side: THREE.BackSide }),
     glass: toon(0x7fffd4, { transparent: true, opacity: 0.4, emissive: 0x0d4038 }),
     steel: toon(0x6a6680),
     crater: toon(0x1c0a26, { emissive: 0x220418 }),
+    ledge: toon(0x4a0612, { emissive: 0x1a0004, rim: 0xff4a6a, rimStrength: 0.5 }),
     stone: toon(0x241420, { rim: 0xff2a4d, rimStrength: 0.35 }),
   };
 
@@ -184,15 +187,59 @@ export class Course {
     this.buildObstacles();
     this.scenery = new Scenery(scene, {
       pathPoints: this.track.samples.filter((_, i) => i % 4 === 0).map((x) => x.p),
-      seaY: this.floorY + 58,
+      seaY: this.floorY + 22,
       hole: this.craterCenter,
       holeRadius: SHAFT_R + 1.5,
       fallStart: this.track.section('fall').s0 / this.length,
     });
+    this.batchStatic();
     this.group.traverse((o) => {
       const m = o as THREE.Mesh;
       if (m.isMesh && (m.material as THREE.Material).type === 'MeshToonMaterial') m.receiveShadow = true;
     });
+  }
+
+  /**
+   * Bake every static decor mesh into one mesh per material: hundreds of
+   * candles, wicks, trims and signs become a few dozen draw calls.
+   */
+  private batchStatic(): void {
+    const keep = new Set<THREE.Object3D>();
+    for (const o of this.moving) if (o.mesh) keep.add(o.mesh);
+    for (const o of this.obstacles) if (o.kind === 'glass' && o.mesh) keep.add(o.mesh);
+    for (const sn of this.sensors) keep.add(sn.mesh);
+    this.group.updateMatrixWorld(true);
+    const buckets = new Map<THREE.Material, { mesh: THREE.Mesh; geo: THREE.BufferGeometry }[]>();
+    const visit = (o: THREE.Object3D) => {
+      if (keep.has(o)) return;
+      const m = o as THREE.Mesh;
+      if (m.isMesh && !(m as unknown as THREE.InstancedMesh).isInstancedMesh && !Array.isArray(m.material)) {
+        const geo = m.geometry.clone().applyMatrix4(m.matrixWorld);
+        const list = buckets.get(m.material) ?? [];
+        list.push({ mesh: m, geo });
+        buckets.set(m.material, list);
+      }
+      for (const c of [...o.children]) visit(c);
+    };
+    for (const c of [...this.group.children]) visit(c);
+    for (const [mat, list] of buckets) {
+      if (list.length < 2) { list[0].geo.dispose(); continue; }
+      // Merge needs identical attribute sets and consistent indexing.
+      const names = Object.keys(list[0].geo.attributes).filter((n) => list.every((x) => n in x.geo.attributes));
+      const indexed = list.every((x) => x.geo.index);
+      const geos = list.map((x) => {
+        let g = indexed ? x.geo : x.geo.toNonIndexed();
+        for (const n of Object.keys(g.attributes)) if (!names.includes(n)) g.deleteAttribute(n);
+        g.morphAttributes = {};
+        return g;
+      });
+      const merged = mergeGeometries(geos);
+      if (!merged) continue;
+      for (const x of list) x.mesh.removeFromParent();
+      const batch = new THREE.Mesh(merged, mat);
+      batch.matrixAutoUpdate = false;
+      this.group.add(batch);
+    }
   }
 
   /** A slingshot post collider (the slingshot builds its own visuals). */
@@ -237,6 +284,7 @@ export class Course {
     tickLava(time, fog);
     tickSurfaces(time);
     this.scenery.update(time, dt);
+    if (this.bullseye) this.bullseye.color.setRGB(1, 0.81, 0.23).multiplyScalar(1.2 + 0.6 * Math.max(0, Math.sin(time * 5)));
     if (this.flames) {
       const m = new THREE.Matrix4();
       const s = new THREE.Matrix4();
@@ -363,14 +411,21 @@ export class Course {
       g.add(wb);
     }
     // A slightly larger dark shell reads as a comic outline.
-    const edge = new THREE.Mesh(new THREE.BoxGeometry(w * 1.05, h * 1.02, d * 1.05), this.mats.ink);
-    (edge.material as THREE.Material).side = THREE.BackSide;
-    g.add(edge);
+    g.add(new THREE.Mesh(new THREE.BoxGeometry(w * 1.05, h * 1.02, d * 1.05), this.mats.outline));
     return g;
   }
 
+  private neonCache = new Map<string, THREE.MeshBasicMaterial>();
+
+  /** Shared emissive materials, so the static batcher can merge everything with the same glow. */
   private neonMat(color: number, intensity = 2.2): THREE.MeshBasicMaterial {
-    return new THREE.MeshBasicMaterial({ color: new THREE.Color(color).multiplyScalar(intensity), toneMapped: false });
+    const key = `${color}:${intensity}`;
+    let m = this.neonCache.get(key);
+    if (!m) {
+      m = new THREE.MeshBasicMaterial({ color: new THREE.Color(color).multiplyScalar(intensity), toneMapped: false });
+      this.neonCache.set(key, m);
+    }
+    return m;
   }
 
   // ------------------------------------------------------------------ the summit
@@ -635,7 +690,7 @@ export class Course {
     }
     // Candle ledges jutting from the wall: something to hit on the way down.
     // [depth below the lip, angle from the far wall, length]: he crosses the shaft and rides the far wall down.
-    const ledges: [number, number, number][] = [[14, 0.05, 3.4], [26, 0.6, 3.8], [38, -0.5, 3.6], [50, 0.2, 3.4], [61, -0.25, 3.8]];
+    const ledges: [number, number, number][] = [[14, 0.05, 2.8], [26, 0.6, 3.0], [38, -0.5, 2.8], [50, 0.2, 2.6], [61, -0.25, 3.0]];
     for (const [depth, ang0, len] of ledges) {
       const ang = entryAngle + Math.PI + ang0;
       const dir = new THREE.Vector3(Math.cos(ang), 0, Math.sin(ang));
@@ -643,7 +698,10 @@ export class Course {
       const r = new THREE.Vector3().crossVectors(UP, dir).normalize();
       // Tilted down toward the middle so nothing rests on it.
       const q = new THREE.Quaternion().setFromAxisAngle(r, -0.42).multiply(basis(dir, UP, r));
-      const m = this.candleMesh(len, 0.9, 3.2, this.mats.red, 0, 0);
+      const m = this.candleMesh(len, 0.9, 3.2, this.mats.ledge, 0, 0);
+      const lip = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.1, 3.2), this.neonMat(0xff2a4d, 2.2));
+      lip.position.set(-len / 2, 0.46, 0);
+      m.add(lip);
       this.addStatic('ledge', 'RED CANDLE', RAPIER.ColliderDesc.cuboid(len / 2, 0.45, 1.6), p, q, { damageScale: 1.1, kick: 3, friction: 0.05, restitution: 0.3 }, m);
     }
   }
@@ -661,19 +719,22 @@ export class Course {
     for (const w of WELLS) {
       const hot = w.label === 'REKT';
       const r1 = Math.min(w.r1, SHAFT_R);
+      const padMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(colors[w.label]).multiplyScalar(hot ? 1.4 : 0.6), toneMapped: false });
       const pad = new THREE.Mesh(
         w.r0 === 0 ? new THREE.CircleGeometry(r1 - 0.12, 40) : new THREE.RingGeometry(w.r0 + 0.12, r1 - 0.12, 64),
-        new THREE.MeshBasicMaterial({ color: new THREE.Color(colors[w.label]).multiplyScalar(hot ? 1.1 : 0.45), toneMapped: false }),
+        padMat,
       );
+      if (hot) this.bullseye = padMat;
       pad.rotation.x = -Math.PI / 2;
       pad.position.copy(c).add(new THREE.Vector3(0, 0.02, 0));
       this.group.add(pad);
       // Labels on the floor, readable from the camera hanging over the shaft.
       const tex = signTexture(`${w.label}\nx${w.mult}`, { color: hot ? '#2a1400' : '#ffffff', glow: hot ? undefined : '#0b0410', stroke: hot ? '#ffe9a0' : '#0b0410', width: 256, height: 256 });
-      const size = hot ? 2.6 : 1.9;
-      const places = hot ? [0] : [0, Math.PI * 0.5, Math.PI, Math.PI * 1.5];
+      const size = hot ? 3.2 : 2.3;
+      const places = hot ? [0] : [0, Math.PI];
+      const labelMat = neon(tex, 1.3);
       for (const a of places) {
-        const sign = new THREE.Mesh(new THREE.PlaneGeometry(size, size), neon(tex, 1.3));
+        const sign = new THREE.Mesh(new THREE.PlaneGeometry(size, size), labelMat);
         sign.rotation.x = -Math.PI / 2;
         const holder = new THREE.Group();
         holder.add(sign);
