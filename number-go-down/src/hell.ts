@@ -292,7 +292,8 @@ export class Scenery {
         const j = (smooth3(pos.getX(i) * 0.3, y * 0.08 + k, pos.getZ(i) * 0.3) - 0.5) * r * 0.6;
         pos.setX(i, pos.getX(i) + j);
         pos.setZ(i, pos.getZ(i) - j * 0.6);
-        const up = (y + h / 2) / h;
+        // Float32 positions round the base a hair below -h/2; a negative base to a fractional power is NaN.
+        const up = THREE.MathUtils.clamp((y + h / 2) / h, 0, 1);
         col.copy(hotBase).lerp(cold, Math.min(1, Math.pow(up * 3.2, 0.7))).multiplyScalar(1 + (1 - Math.min(1, up * 4)) * 0.8);
         cols.set([col.r, col.g, col.b], i * 3);
       }

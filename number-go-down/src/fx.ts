@@ -400,6 +400,18 @@ class GradeEffect extends Effect {
   }
 }
 
+/** One NaN pixel in the HDR buffer becomes a black screen after bloom; scrub them before the heavy pass. */
+class SanitizeEffect extends Effect {
+  constructor() {
+    super('SanitizeEffect', /* glsl */ `
+      void mainImage(const in vec4 inputColor, const in vec2 uv, out vec4 outputColor) {
+        vec3 c = inputColor.rgb;
+        bvec3 bad = bvec3(isnan(c.r) || isinf(c.r), isnan(c.g) || isinf(c.g), isnan(c.b) || isinf(c.b));
+        outputColor = vec4(any(bad) ? vec3(0.0) : min(c, vec3(64.0)), inputColor.a);
+      }`, { blendFunction: BlendFunction.SET });
+  }
+}
+
 export interface GradeParams {
   desat: number; cool: number; grain: number; flash: number; chroma: number; vignette: number; heat: number;
 }
@@ -423,6 +435,7 @@ export class Post {
     });
     this.composer.addPass(new RenderPass(scene, camera));
     if (quality === 'high') {
+      this.composer.addPass(new EffectPass(camera, new SanitizeEffect()));
       const effects: Effect[] = [];
       if (moon) {
         // Light shafts from the eclipse corona, broken up by the spires and candle towers.

@@ -180,7 +180,8 @@ export class Slingshot {
     this.bands.forEach((band, i) => {
       const tip = ends[i];
       _a.copy(this.pouch).add(_b.set(i === 0 ? -0.4 : 0.4, 0, 0));
-      const len = tip.distanceTo(_a);
+      // Never scale to ~0: a singular normal matrix puts NaN into the HDR buffer and bloom smears it over the frame.
+      const len = Math.max(0.1, tip.distanceTo(_a));
       band.position.copy(tip).add(_a).multiplyScalar(0.5);
       band.scale.set(len, 1, 1);
       _b.copy(_a).sub(tip).normalize();

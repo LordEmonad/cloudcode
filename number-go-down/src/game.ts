@@ -1003,6 +1003,8 @@ export class Game {
     this.moon.lookAt(cp);
     (this.moon.material as THREE.MeshBasicMaterial).color.setRGB(1, 0.35, 0.16).multiplyScalar(1.6 * (0.6 + 0.4 * hell));
     const em = this.ragdoll.get('pelvis').currPos;
+    const wantFollow = this.state === 'flight' && this.simT > 0.6 ? 1 : this.state === 'landed' || this.state === 'results' ? 1 : 0;
+    this.lights.followOn += (wantFollow - this.lights.followOn) * (1 - Math.exp(-dt * 4));
     this.lights.update(em, this.rig.camera);
   }
 

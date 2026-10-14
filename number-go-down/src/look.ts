@@ -101,6 +101,8 @@ export function addRim(mat: THREE.Material, strength: number, power: number, sss
           float wrap = saturate(dot(N, normalize(vec3(0.3, 0.8, 0.5))) * 0.5 + 0.5);
           vec3 sss = uSss * (0.35 + 0.65 * (1.0 - wrap)) * (0.6 + 0.4 * fres);
           outgoingLight += rim * diffuseColor.a + sss;
+          // Never let a light inside a surface push the HDR buffer toward Inf (bloom would smear NaN everywhere).
+          outgoingLight = min(outgoingLight, vec3(48.0));
         }
         #include <opaque_fragment>`,
       );
@@ -280,7 +282,7 @@ export class Lights {
     this.hemi = new THREE.HemisphereLight(0xffd6dc, 0x3a0a18, 0.9);
     this.key = new THREE.DirectionalLight(0xfff0e0, 3.2);
     this.glow = new THREE.DirectionalLight(0xff5a20, 1.0);
-    this.follow = new THREE.PointLight(0xffe6ea, 16, 9, 1.8);
+    this.follow = new THREE.PointLight(0xffe6ea, 26, 10, 1.8);
     scene.add(this.hemi, this.key, this.key.target, this.glow, this.glow.target, this.follow);
     // Real-time shadow from the key light, only around Emonad (cheap and grounding).
     this.key.castShadow = true;
@@ -302,13 +304,18 @@ export class Lights {
     RIM.colorB.value.lerp(this.rimB, k);
   }
 
+  /** The follow light is off while he sits in the slingshot (the bands would pass through it) and fades in after launch. */
+  followOn = 0;
+
   update(emonad: THREE.Vector3, camera: THREE.Camera): void {
     const cp = camera.position;
+    this.follow.intensity = 26 * this.followOn;
     this.key.position.set(emonad.x + 5, emonad.y + 13, emonad.z + 7);
     this.key.target.position.copy(emonad);
     this.glow.position.set(cp.x, cp.y - 20, cp.z - 6);
     this.glow.target.position.set(cp.x, cp.y, cp.z - 8);
-    this.follow.position.set(emonad.x, emonad.y + 1.2, emonad.z + 0.6);
+    // Well clear of the tumbling body: a point light inside a mesh blows up to Inf in the HDR buffer.
+    this.follow.position.set(emonad.x, emonad.y + 2.6, emonad.z + 0.9);
     // Rim directions live in view space; keep them camera-relative so the colours stay on their sides.
     RIM.dirA.value.set(-0.7, 0.3, 0.6).normalize();
     RIM.dirB.value.set(0.8, -0.2, 0.4).normalize();
