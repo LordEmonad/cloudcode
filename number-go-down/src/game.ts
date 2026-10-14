@@ -67,6 +67,7 @@ export class Game {
   private farthest = 0;
   private farthestAt = 0;
   private rescues = 0;
+  private coached = { steer: false, fall: false };
   private outlines: THREE.Mesh[] = [];
   private outlineMat = outlineMaterial(0x0b0410, 2.4);
 
@@ -334,6 +335,7 @@ export class Game {
     this.farthest = 0;
     this.farthestAt = 0;
     this.rescues = 0;
+    this.coached = { steer: false, fall: false };
     this.steerInput = this.steerInputY = this.steerSmoothed = this.steerSmoothedY = 0;
     this.bannerZone = null;
     this.hintTimer = 0;
@@ -778,7 +780,10 @@ export class Game {
     this.rig.update(realDt, this.state === 'aim' ? this.sling.pouch : target, vel, mode, this.frameNow, closeUp,
       this.aim && !this.aim.cancelled ? this.aim.power : 0, this.course.craterCenter);
     this.keepCameraClear(this.state === 'aim' ? this.sling.pouch : target);
-    if (this.state === 'flight') this.announceZone(this.frameNow.zone);
+    if (this.state === 'flight') {
+      this.announceZone(this.frameNow.zone);
+      this.coach();
+    }
 
     this.updateAtmosphere(realDt);
     this.particles.update(realDt * Math.max(timeScale, 0.12));
@@ -851,6 +856,20 @@ export class Game {
     if (hit && hit.timeOfImpact < dist) {
       const safe = Math.max(0.8, hit.timeOfImpact - 0.45);
       cam.set(target.x, target.y + 0.3, target.z).addScaledVector(dir, safe);
+    }
+  }
+
+  /** One-time nudges: steering on the first runs, and the 2D aim at the top of The Fall. */
+  private coach(): void {
+    const w = window.innerWidth;
+    const h = window.innerHeight;
+    if (!this.coached.steer && this.stats.runs <= 3 && this.simT > 1.6) {
+      this.coached.steer = true;
+      this.hud.callout('DRAG TO STEER', w / 2, h * 0.72, 'gate', 'HIT THE RINGS');
+    }
+    if (!this.coached.fall && this.frameNow?.kind === 'fall') {
+      this.coached.fall = true;
+      this.hud.callout('AIM FOR REKT', w / 2, h * 0.7, 'gate', 'DRAG ANY WAY TO STEER');
     }
   }
 
